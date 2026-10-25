@@ -5,5 +5,7 @@
   "main": "Index.ets",
   "author": "",
   "license": "LGPL-2.1",
-  "dependencies": {}
+  "dependencies": {
+    "libhgs.so": "file:./src/main/cpp/types/libhgs"
+  }
 }
