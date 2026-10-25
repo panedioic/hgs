@@ -12,6 +12,7 @@ add_library(hgs SHARED
 
 target_link_libraries(hgs PUBLIC
     libace_napi.z.so
+    libace_ndk.z.so
     libhilog_ndk.z.so
     libnative_window.so
     libEGL.so

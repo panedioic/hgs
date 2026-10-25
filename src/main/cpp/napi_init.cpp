@@ -1,6 +1,12 @@
+// hgs 原生入口 — NativeXComponent 模式 (参照 blender-harmonyos):
+// XComponent(libraryname:'hgs') 触发模块 Init 时 exports 携带
+// OH_NATIVE_XCOMPONENT_OBJ, 在此注册 surface 回调; 生命周期由
+// OnSurfaceCreated/Changed/Destroyed 在原生层驱动, 不再暴露
+// create/destroy 导出。
 #include "napi/native_api.h"
 #include "render/egl_renderer.h"
 
+#include <ace/xcomponent/native_interface_xcomponent.h>
 #include <cstdint>
 #include <hilog/log.h>
 #include <mutex>
@@ -9,84 +15,102 @@
 namespace {
 
 std::mutex gMutex;
-std::unordered_map<uint64_t, hgs::EmptyEglRenderer *> gRenderers;
+// 以 OH_NativeXComponent* 为键的渲染器注册表 (每个 XComponent 实例一个)
+std::unordered_map<OH_NativeXComponent *, hgs::EmptyEglRenderer *> gRenderers;
 
-// 临时冒烟接口: createEmptyRenderer(id: number, surfaceId: BigInt)。
-// 参数约定对齐 entry 的 createRenderer (surfaceId 走 BigInt 防精度丢失)。
-napi_value CreateEmptyRenderer(napi_env env, napi_callback_info info) {
-    size_t argc = 2;
-    napi_value args[2];
-    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-    if (argc < 2) {
-        OH_LOG_ERROR(LOG_APP, "[HGS-NAPI] createEmptyRenderer: need 2 args (id, surfaceId)");
-        return nullptr;
+void OnSurfaceCreated(OH_NativeXComponent *comp, void *window) {
+    uint64_t w = 0, h = 0;
+    OH_NativeXComponent_GetXComponentSize(comp, window, &w, &h);
+    auto *nw = static_cast<OHNativeWindow *>(window);
+    if (nw == nullptr) {
+        OH_LOG_ERROR(LOG_APP, "[HGS-NAPI] OnSurfaceCreated: null window");
+        return;
+    }
+    // 对齐 blender 的 ohos_configure_native_window: 把 ArkUI 给的尺寸
+    // 写进 buffer geometry, 避免 eglQuery 尺寸与 surface 不一致
+    int32_t rc = OH_NativeWindow_NativeWindowHandleOpt(
+        nw, SET_BUFFER_GEOMETRY, static_cast<int32_t>(w), static_cast<int32_t>(h));
+    if (rc != 0) {
+        OH_LOG_WARN(LOG_APP, "[HGS-NAPI] SET_BUFFER_GEOMETRY failed ret=%{public}d", rc);
     }
 
-    uint32_t id = 0;
-    if (napi_get_value_uint32(env, args[0], &id) != napi_ok) {
-        OH_LOG_ERROR(LOG_APP, "[HGS-NAPI] createEmptyRenderer: id parse failed");
-        return nullptr;
+    hgs::EmptyEglRenderer *r = hgs::EmptyEglRenderer::Create(nw);
+    if (r == nullptr) {
+        OH_LOG_ERROR(LOG_APP, "[HGS-NAPI] EmptyEglRenderer::Create failed");
+        return;
     }
-
-    uint64_t surfaceId = 0;
-    bool lossless = true;
-    if (napi_get_value_bigint_uint64(env, args[1], &surfaceId, &lossless) != napi_ok) {
-        OH_LOG_ERROR(LOG_APP, "[HGS-NAPI] createEmptyRenderer: surfaceId BIGINT parse failed");
-        return nullptr;
-    }
-
-    {
-        std::lock_guard<std::mutex> lock(gMutex);
-        auto it = gRenderers.find(id);
-        if (it != gRenderers.end()) {
-            OH_LOG_WARN(LOG_APP, "[HGS-NAPI] renderer id=%{public}u already exists, destroy first", id);
-            delete it->second;
-            gRenderers.erase(it);
-        }
-        hgs::EmptyEglRenderer *r = hgs::EmptyEglRenderer::Create(surfaceId);
-        if (r == nullptr) {
-            OH_LOG_ERROR(LOG_APP, "[HGS-NAPI] EmptyEglRenderer::Create(surfaceId=%{public}llu) failed",
-                         static_cast<unsigned long long>(surfaceId));
-            return nullptr;
-        }
-        gRenderers[id] = r;
-        OH_LOG_INFO(LOG_APP, "[HGS-NAPI] createEmptyRenderer id=%{public}u surfaceId=%{public}llu",
-                    id, static_cast<unsigned long long>(surfaceId));
-    }
-    return nullptr;
+    std::lock_guard<std::mutex> lock(gMutex);
+    gRenderers[comp] = r;
+    OH_LOG_INFO(LOG_APP, "[HGS-NAPI] OnSurfaceCreated %{public}ux%{public}u renderer=%{public}p",
+                static_cast<unsigned>(w), static_cast<unsigned>(h), static_cast<void *>(r));
 }
 
-napi_value DestroyEmptyRenderer(napi_env env, napi_callback_info info) {
-    size_t argc = 1;
-    napi_value args[1];
-    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-    if (argc < 1) {
-        OH_LOG_ERROR(LOG_APP, "[HGS-NAPI] destroyEmptyRenderer: need 1 arg (id)");
-        return nullptr;
+void OnSurfaceChanged(OH_NativeXComponent *comp, void *window) {
+    uint64_t w = 0, h = 0;
+    OH_NativeXComponent_GetXComponentSize(comp, window, &w, &h);
+    auto *nw = static_cast<OHNativeWindow *>(window);
+    if (nw == nullptr) {
+        return;
     }
+    OH_NativeWindow_NativeWindowHandleOpt(
+        nw, SET_BUFFER_GEOMETRY, static_cast<int32_t>(w), static_cast<int32_t>(h));
+    OH_LOG_INFO(LOG_APP, "[HGS-NAPI] OnSurfaceChanged %{public}ux%{public}u",
+                static_cast<unsigned>(w), static_cast<unsigned>(h));
+}
 
-    uint32_t id = 0;
-    if (napi_get_value_uint32(env, args[0], &id) != napi_ok) {
-        return nullptr;
-    }
-
+void OnSurfaceDestroyed(OH_NativeXComponent *comp, void * /*window*/) {
     std::lock_guard<std::mutex> lock(gMutex);
-    auto it = gRenderers.find(id);
+    auto it = gRenderers.find(comp);
     if (it != gRenderers.end()) {
         delete it->second;
         gRenderers.erase(it);
-        OH_LOG_INFO(LOG_APP, "[HGS-NAPI] destroyEmptyRenderer id=%{public}u", id);
+        OH_LOG_INFO(LOG_APP, "[HGS-NAPI] OnSurfaceDestroyed renderer released");
     }
+}
+
+OH_NativeXComponent_Callback gXcompCb = {
+    OnSurfaceCreated, OnSurfaceChanged, OnSurfaceDestroyed, nullptr,
+};
+
+// NAPI: bindXComponent(xcompObject) — 非 Init 触发的 XComponent (同进程
+// 第二个窗口: 模块已加载, Init 不会再次执行) 在 onLoad 里显式补挂回调。
+// 参照 blender 的 bindSubXComponent。
+napi_value BindXComponent(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value argv[1];
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    if (argc < 1) {
+        return nullptr;
+    }
+    OH_NativeXComponent *nx = nullptr;
+    if (napi_unwrap(env, argv[0], reinterpret_cast<void **>(&nx)) != napi_ok || nx == nullptr) {
+        OH_LOG_ERROR(LOG_APP, "[HGS-NAPI] bindXComponent: napi_unwrap failed");
+        return nullptr;
+    }
+    OH_NativeXComponent_RegisterCallback(nx, &gXcompCb);
+    OH_LOG_INFO(LOG_APP, "[HGS-NAPI] bindXComponent wired");
     return nullptr;
 }
 
 EXTERN_C_START
 static napi_value Init(napi_env env, napi_value exports) {
-    napi_property_descriptor desc[] = {
-        {"createEmptyRenderer", nullptr, CreateEmptyRenderer, nullptr, nullptr, nullptr, napi_default, nullptr},
-        {"destroyEmptyRenderer", nullptr, DestroyEmptyRenderer, nullptr, nullptr, nullptr, napi_default, nullptr},
+    const napi_property_descriptor desc[] = {
+        {"bindXComponent", nullptr, BindXComponent, nullptr, nullptr, nullptr, napi_default, nullptr},
     };
     napi_define_properties(env, exports, sizeof(desc) / sizeof(desc[0]), desc);
+
+    // XComponent(libraryname:'hgs') 触发的加载: exports 携带原生对象
+    napi_value xc;
+    if (napi_get_named_property(env, exports, OH_NATIVE_XCOMPONENT_OBJ, &xc) == napi_ok) {
+        OH_NativeXComponent *nx = nullptr;
+        if (napi_unwrap(env, xc, reinterpret_cast<void **>(&nx)) == napi_ok && nx != nullptr) {
+            OH_NativeXComponent_RegisterCallback(nx, &gXcompCb);
+            char idBuf[128] = {0};
+            uint64_t idLen = sizeof(idBuf);
+            OH_NativeXComponent_GetXComponentId(nx, idBuf, &idLen);
+            OH_LOG_INFO(LOG_APP, "[HGS-NAPI] XComponent callbacks registered id=%{public}s", idBuf);
+        }
+    }
     return exports;
 }
 EXTERN_C_END

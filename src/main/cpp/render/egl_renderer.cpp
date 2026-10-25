@@ -32,16 +32,16 @@ EGLDisplay GetSharedDisplay() {
 
 namespace hgs {
 
-EmptyEglRenderer *EmptyEglRenderer::Create(uint64_t surfaceId) {
+EmptyEglRenderer *EmptyEglRenderer::Create(OHNativeWindow *window) {
     auto *r = new (std::nothrow) EmptyEglRenderer();
-    if (r == nullptr || !r->Init(surfaceId)) {
+    if (r == nullptr || !r->Init(window)) {
         delete r;
         return nullptr;
     }
     return r;
 }
 
-bool EmptyEglRenderer::Init(uint64_t surfaceId) {
+bool EmptyEglRenderer::Init(OHNativeWindow *window) {
     display_ = GetSharedDisplay();
     if (display_ == EGL_NO_DISPLAY) {
         return false;
@@ -69,11 +69,14 @@ bool EmptyEglRenderer::Init(uint64_t surfaceId) {
         return false;
     }
 
-    if (OH_NativeWindow_CreateNativeWindowFromSurfaceId(surfaceId, &window_) != 0 || window_ == nullptr) {
-        OH_LOG_ERROR(LOG_APP, "[HGS-EGL] CreateNativeWindowFromSurfaceId(%{public}llu) failed",
-                     static_cast<unsigned long long>(surfaceId));
+    // window 由 NativeXComponent OnSurfaceCreated 交付, 此处持有一个引用
+    // 保证渲染线程期间有效; 析构时 Unreference 归还框架。
+    if (window == nullptr) {
+        OH_LOG_ERROR(LOG_APP, "[HGS-EGL] null window");
         return false;
     }
+    window_ = window;
+    OH_NativeWindow_NativeObjectReference(window_);
 
     surface_ = eglCreateWindowSurface(display_, config, (EGLNativeWindowType)window_, nullptr);
     if (surface_ == EGL_NO_SURFACE) {
@@ -83,8 +86,7 @@ bool EmptyEglRenderer::Init(uint64_t surfaceId) {
 
     running_ = true;
     thread_ = std::thread(&EmptyEglRenderer::RenderLoop, this);
-    OH_LOG_INFO(LOG_APP, "[HGS-EGL] renderer started surfaceId=%{public}llu",
-                static_cast<unsigned long long>(surfaceId));
+    OH_LOG_INFO(LOG_APP, "[HGS-EGL] renderer started window=%{public}p", static_cast<void *>(window_));
     return true;
 }
 
@@ -120,7 +122,8 @@ EmptyEglRenderer::~EmptyEglRenderer() {
         eglDestroyContext(display_, context_);
     }
     if (window_ != nullptr) {
-        OH_NativeWindow_DestroyNativeWindow(window_);
+        OH_NativeWindow_NativeObjectUnreference(window_);
+        window_ = nullptr;
     }
     // 共享 display 不在此销毁 (进程级持有, 对齐 entry 约定)
     OH_LOG_INFO(LOG_APP, "[HGS-EGL] renderer destroyed");
