@@ -94,3 +94,14 @@ target_link_libraries(hgs PUBLIC
     libGLESv3.so
     ${WAYLAND_LIBS_DIR}/libwayland-server.so.0
 )
+
+# smoke 测试设施的原生侧 (自 entry 迁入): 查询/注入原语, 产品代码不引用。
+# 符号来自 libhgs.so (同进程运行时解析), 与 entry 同包加载。
+add_library(smoke_napi SHARED
+    smoke/smoke_napi.cpp
+)
+target_link_libraries(smoke_napi PRIVATE
+    hgs
+    libace_napi.z.so
+    libhilog_ndk.z.so
+)

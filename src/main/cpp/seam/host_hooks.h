@@ -28,9 +28,9 @@ public:
     void OnDesktopSessionEnded() override {}
 };
 
-// 进程级装配点。Set 必须在合成器活动之前 (App 装配期), 之后只读。
+// 进程级访问: 弱符号 Hgs_hostHooks (registry.h) 由宿主注入,
+// 未注入时返回 NullHostLifecycleHooks (簿记 no-op)。
 HostLifecycleHooks &GetHostLifecycleHooks();
-void SetHostLifecycleHooks(HostLifecycleHooks *hooks);
 
 } // namespace seam
 } // namespace hgs

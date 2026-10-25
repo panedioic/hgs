@@ -1,21 +1,19 @@
 #include "host_hooks.h"
+#include "registry.h"
 
 namespace hgs {
 namespace seam {
 
 namespace {
 NullHostLifecycleHooks g_nullHooks;
-HostLifecycleHooks *g_hooks = &g_nullHooks;
 } // namespace
 
 HostLifecycleHooks &GetHostLifecycleHooks()
 {
-    return *g_hooks;
-}
-
-void SetHostLifecycleHooks(HostLifecycleHooks *hooks)
-{
-    g_hooks = (hooks != nullptr) ? hooks : &g_nullHooks;
+    if (Hgs_hostHooks != nullptr) {
+        return *Hgs_hostHooks;
+    }
+    return g_nullHooks;
 }
 
 } // namespace seam

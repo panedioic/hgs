@@ -69,10 +69,9 @@ public:
     void SetZeroCopySurfaceReady(uint64_t, bool) override {}
 };
 
-// 进程级后端装配点。宿主在启动早期注入; 之后只读。
-// 线程约定: Set 必须在任何合成器/渲染器活动之前 (App 装配期), 之后只 Get。
+// 进程级后端访问: 弱符号 Hgs_zeroCopyBackend (registry.h) 由宿主注入,
+// 未注入时返回 NullZeroCopyBackend (ZC 关闭, wl_shm 路径)。
 ZeroCopyBackend &GetZeroCopyBackend();
-void SetZeroCopyBackend(ZeroCopyBackend *backend);
 
 } // namespace seam
 } // namespace hgs
