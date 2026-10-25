@@ -1,0 +1,9 @@
+{
+  "name": "hgs",
+  "version": "1.0.0",
+  "description": "HarmonyOS Graphics UserInterface Service.",
+  "main": "Index.ets",
+  "author": "",
+  "license": "LGPL-2.1",
+  "dependencies": {}
+}
