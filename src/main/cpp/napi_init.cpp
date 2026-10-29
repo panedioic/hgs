@@ -17,7 +17,7 @@
 #include <unordered_map>
 #include <window_manager/oh_window.h>
 #include "napi/native_api.h"
-#include "render/egl_renderer.h"
+#include "smoke/egl_renderer.h"
 #include "compositor/wayland_server.h"
 #include "bridge/plugin_manager.h"
 #include "input/input_manager.h"

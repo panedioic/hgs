@@ -26,7 +26,7 @@ set(WAYLAND_LIBS_DIR ${NATIVERENDER_ROOT_PATH}/../../../libs/${OHOS_ARCH})
 
 add_library(hgs SHARED
     napi_init.cpp
-    render/egl_renderer.cpp
+    smoke/egl_renderer.cpp
 
     # ── 合成器域 ──
     compositor/wayland_server.cpp
