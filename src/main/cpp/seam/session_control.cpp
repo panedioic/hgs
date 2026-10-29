@@ -1,3 +1,4 @@
+// hgs/src/main/cpp/seam/session_control.h — Wayland Session Contril 实现
 #include "registry.h"
 
 #include "compositor/wayland_server.h"
@@ -66,18 +67,13 @@ public:
 
 WaylandSessionControl g_sessionControl;
 
-// 加载期装配: 把实现指针写入宿主 (entry.so) 的槽位。libhgs.so 晚于
-// entry.so 加载, 其对 entry 符号的绑定此时已可解析。
-struct SessionControlInstaller
-{
-    SessionControlInstaller()
-    {
-        Hgs_sessionControlSlot = static_cast<void *>(&g_sessionControl);
-    }
-};
-const SessionControlInstaller g_sessionControlInstaller;
-
 } // namespace
 
 } // namespace seam
 } // namespace hgs
+
+// C 访问器 (强符号) — 宿主调用期经 dlsym(RTLD_DEFAULT) 获取
+extern "C" hgs::seam::SessionControl* Hgs_getSessionControl(void)
+{
+    return &hgs::seam::g_sessionControl;
+}

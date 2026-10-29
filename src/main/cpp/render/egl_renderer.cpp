@@ -3,6 +3,9 @@
 #include <GLES3/gl3.h>
 #include <chrono>
 #include <hilog/log.h>
+
+#undef LOG_TAG
+#define LOG_TAG "HGS_EGL"
 #include <native_window/external_window.h>
 #include <new>
 #include <thread>

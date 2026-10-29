@@ -1,18 +1,31 @@
+// hgs/src/main/cpp/seam/zero_copy.h — 零拷贝接缝实现
 #include "zero_copy.h"
-#include "registry.h"
+#include "symbol_resolver.h"
 
 namespace hgs {
 namespace seam {
 
 namespace {
-// 默认空后端: 宿主未注入时合成器运行在 wl_shm CPU 路径 (完整可用形态)
+
 NullZeroCopyBackend g_nullBackend;
+
+// 宿主 (libentry.so) 的注入变量 Hgs_zeroCopyBackend 的运行时解析结果
+ZeroCopyBackend **ResolveSlot()
+{
+    static ZeroCopyBackend **slot = nullptr;
+    if (slot == nullptr) {
+        slot = static_cast<ZeroCopyBackend **>(ResolveHostSymbol("Hgs_zeroCopyBackend"));
+    }
+    return slot;
+}
+
 } // namespace
 
 ZeroCopyBackend &GetZeroCopyBackend()
 {
-    if (Hgs_zeroCopyBackend != nullptr) {
-        return *Hgs_zeroCopyBackend;
+    ZeroCopyBackend **slot = ResolveSlot();
+    if (slot != nullptr && *slot != nullptr) {
+        return **slot;
     }
     return g_nullBackend;
 }

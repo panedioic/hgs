@@ -10,6 +10,9 @@
 #include <sys/types.h>
 #include <cstdint>
 #include <hilog/log.h>
+
+#undef LOG_TAG
+#define LOG_TAG "HGS_NAPI"
 #include <mutex>
 #include <unordered_map>
 #include <window_manager/oh_window.h>

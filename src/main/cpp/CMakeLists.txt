@@ -53,6 +53,8 @@ add_library(hgs SHARED
     compositor/winehua_toplevel.cpp
     seam/zero_copy.cpp
     seam/host_hooks.cpp
+    seam/session_control.cpp
+    seam/symbol_resolver.cpp
 
     # ── 真实 EGL 渲染器 + 输入 ──
     graphics/egl_renderer.cpp

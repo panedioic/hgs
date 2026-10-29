@@ -1,25 +1,20 @@
-// ============================================================================
-// seam/registry — 接缝装配注册表 (方案 B 边界契约, 对应 contracts C11)
+// hgs/src/main/cpp/seam/registry.h — 接缝装配注册表
 //
-// 两个方向的跨 so 注入, 机制均为链接期弱符号绑定 (同进程 NAPI so 互解析,
-// 工程先例: smoke_napi — 无 dlopen/dlsym):
+// 不实现任何逻辑，只做三件事：
 //
-//   宿主 (entry.so) 定义并填充 → libhgs.so 弱引用消费:
-//     Hgs_zeroCopyBackend      GraphicsBroker 适配器 (ZC 查询/挂载/ready)
-//     Hgs_hostHooks            wine_process 适配器 (桌面 shell 进程簿记)
-//     Hgs_sessionControlSlot   SessionControl 槽位 (void*)
-//
-//   ⚠ 方向性: entry.so 先于 libhgs.so 加载, 其对后加载 so 的数据符号
-//   重定位不会回补 — 因此 "entry 消费 hgs 实现" 必须走槽位模式: libhgs
-//   加载时 (构造器) 经其对 entry 符号的绑定 (后加载方可解析先行模块)
-//   把实现指针写入槽位; entry 在调用期读槽。
-//
-// 任一方向未注入时消费方取 null 语义:
-//   - ZC 关闭 → 合成器走 wl_shm CPU 路径 (完整可用形态)
-//   - 簿记 no-op → 仅影响 ArkTS 防误操作标记与退出分类
-//   - 会话控制缺省 → IsDesktopMode=false / 输出尺寸回退 1280x720 /
-//     root 等待超时走 ready-degraded
-// ============================================================================
+//     (a) 声明三个跨 so 符号的契约（现在全部是运行时解析，没有 weak 属性）：
+//         libentry.so 提供：  Hgs_hostHooks          （HostLifecycleHooks* 变量）
+//                             Hgs_zeroCopyBackend    （ZeroCopyBackend* 变量）
+//         libhgs.so  提供：   Hgs_getSessionControl()（返回 SessionControl* 的 C 函数）
+//     (b) 定义 SessionControl 纯虚接口——12 个方法，全是宿主侧编排需要问合成器的问题：
+//     (c) 声明 NullSessionControl——全部返回安全默认值（IsDesktopMode=false、尺寸 0、
+//         动作 no-op）。它是未注入时的兜底：libhgs 还没加载，宿主照样能跑（只是走 managed 模式）。
+//     (d) 记录两次崩的经验：
+//          为什么不能链接期绑定 (实测教训): OHOS 的 NAPI so 在各自加载命名空间
+//          内, 彼此的加载期重定位看不到对方 — weak 数据符号在 GOT 里解析为 0,
+//          解引用即 SIGSEGV@0; 函数弱符号则常驻 NULL (IsDesktopMode 恒 false)。
+//          dlsym 在调用期解析 (对方模块此时已加载), 无方向问题; 查符号 ≠ dlopen
+//          加载, 不破坏 "entry 不加载 hgs / hgs 不加载 entry" 的隔离原则。
 #pragma once
 
 #include "host_hooks.h"
@@ -27,22 +22,11 @@
 
 namespace hgs {
 namespace seam {
+
 class SessionControl;  // 定义见下
+
 } // namespace seam
 } // namespace hgs
-
-// ── 弱符号装配点 (C 链接, 名字不参与重整) ──────────────────────────────────
-extern "C" {
-
-// 宿主 (entry.so) 定义: ZC 后端与进程簿记适配器 (libhgs.so 加载期绑定)
-__attribute__((weak)) extern hgs::seam::ZeroCopyBackend*    Hgs_zeroCopyBackend;
-__attribute__((weak)) extern hgs::seam::HostLifecycleHooks* Hgs_hostHooks;
-
-// 宿主 (entry.so) 定义的槽位; libhgs.so 加载时经构造器写入实现指针。
-// 槽位属 entry 自有数据, entry 调用期直接读 — 无跨 so 重定位问题。
-__attribute__((weak)) extern void* Hgs_sessionControlSlot;
-
-} // extern "C"
 
 namespace hgs {
 namespace seam {
@@ -53,14 +37,18 @@ class SessionControl
 {
 public:
     virtual ~SessionControl() = default;
+    // 决定自动拉起 explorer、是否传 WINEHUA_DESKTOP_MODE
     virtual bool IsDesktopMode() const = 0;
+    // 决定 /desktop=shell,WxH 的虚拟桌面尺寸
     virtual int OutputWidth() const = 0;
     virtual int OutputHeight() const = 0;
+    // 等待并确认桌面 root 就绪（15s 超时 → ready-degraded
     virtual void PromotePendingDesktopRoot() = 0;
     virtual uint32_t GetDesktopRootToplevelId() const = 0;
     // 首启 wineboot 期间抑制 root 识别/窗口事件 (PC 模式初始化等待窗)
     virtual void SetDesktopRootRecognitionEnabled(bool on) = 0;
     virtual void SetToplevelEventSuppressed(bool on) = 0;
+    // 会话终结收口
     virtual void Stop() = 0;
     virtual void ResetSessionState() = 0;
     virtual void ResetFirstFrame() = 0;
@@ -69,7 +57,7 @@ public:
     virtual void AppendWineGamepadEnv(std::vector<std::string> &env) = 0;
 };
 
-// 空实现: 宿主未装配 (libhgs 未加载/未写入) 时的降级语义
+// 空实现: 未装配时的降级语义 (entry 侧 dlsym 落空 / hgs 侧宿主未注入)
 class NullSessionControl : public SessionControl
 {
 public:
@@ -87,15 +75,17 @@ public:
     void AppendWineGamepadEnv(std::vector<std::string> &) override {}
 };
 
-// 会话控制访问 — 读槽位 (entry 自有数据); libhgs 未装配时返回空实现
-inline SessionControl &GetSessionControl()
-{
-    if (Hgs_sessionControlSlot != nullptr) {
-        return *static_cast<SessionControl *>(Hgs_sessionControlSlot);
-    }
-    static NullSessionControl nullSession;
-    return nullSession;
-}
+// 宿主侧访问点 (entry 的 host_seams.cpp 提供, 供 wine_launch 等
+// entry 内调用点使用; 转发到 dlsym 查询的 hgs 实现)
+SessionControl &HostSessionControl();
 
 } // namespace seam
 } // namespace hgs
+
+// ── hgs → 宿主的访问器 (libhgs 提供强符号, 宿主调用期 dlsym 查询) ─────────
+extern "C" {
+
+// （实现见：session_control.cpp）
+hgs::seam::SessionControl* Hgs_getSessionControl(void);
+
+} // extern "C"
