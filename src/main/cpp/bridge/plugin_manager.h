@@ -5,6 +5,8 @@
 #include <cstdint>
 #include <deque>
 
+#include "napi/native_api.h"  // 尾部 hgs::surface 的 NAPI 导出声明
+
 // surfaceId 驱动的 XComponent 管理
 //
 // 每个 XComponent 通过自定义 Controller 回调拿到的 surfaceId 是唯一的,
@@ -66,3 +68,16 @@ private:
     // deque 支持 CancelPendingToplevel 的定点删除 (queue 底层不可迭代)
     std::deque<uint32_t> pendingToplevelQueue_;
 };
+
+// todo: 未来放入 egl_surface -> 改为 native 实现。目前暂时放在这里
+namespace hgs {
+namespace surface {
+
+// NAPI: createRenderer/resizeRenderer/destroyRenderer — 按 toplevelId 的
+// 渲染器表管理 (定义暂在 bridge/plugin_manager.cpp, todo 迁入本文件)
+napi_value CreateRendererNAPI(napi_env env, napi_callback_info info);
+napi_value ResizeRendererNAPI(napi_env env, napi_callback_info info);
+napi_value DestroyRendererNAPI(napi_env env, napi_callback_info info);
+
+} // namespace surface
+} // namespace hgs

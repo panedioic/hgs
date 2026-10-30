@@ -36,62 +36,6 @@ namespace {
 // IME、手柄/控制器。宿主 (entry) 的 ArkTS 侧经 libhgs.so 调用同名导出。
 // ============================================================================
 
-// -- NAPI: createRenderer -- (XComponentController.onSurfaceCreated 调用)
-static napi_value CreateRenderer(napi_env env, napi_callback_info info) {
-    size_t argc = 2;
-    napi_value args[2];
-    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-    if (argc < 2) {
-        OH_LOG_ERROR(LOG_APP, "[MW-NAPI] createRenderer: need 2 args (toplevelId, surfaceId)");
-        return nullptr;
-    }
-    uint32_t tid = 0;
-    napi_get_value_uint32(env, args[0], &tid);
-    int64_t surfaceId = 0;
-    bool lossless = true;
-    napi_status s = napi_get_value_bigint_int64(env, args[1], &surfaceId, &lossless);
-    if (s != napi_ok) {
-        OH_LOG_ERROR(LOG_APP, "[MW-NAPI] createRenderer: BIGINT parse failed status=%{public}d", s);
-        return nullptr;
-    }
-    OH_LOG_INFO(LOG_APP, "[MW-NAPI] createRenderer tl=%{public}u surfaceId=%{public}ld", tid, surfaceId);
-    PluginManager::GetInstance()->CreateRenderer(tid, surfaceId);
-    return nullptr;
-}
-
-// -- NAPI: resizeRenderer -- (XComponentController.onSurfaceChanged 调用)
-static napi_value ResizeRenderer(napi_env env, napi_callback_info info) {
-    size_t argc = 3;
-    napi_value args[3];
-    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-    if (argc < 3) {
-        OH_LOG_ERROR(LOG_APP, "[MW-NAPI] resizeRenderer: need 3 args (toplevelId, w, h)");
-        return nullptr;
-    }
-    uint32_t tid = 0;
-    napi_get_value_uint32(env, args[0], &tid);
-    int32_t w = 0, h = 0;
-    napi_get_value_int32(env, args[1], &w);
-    napi_get_value_int32(env, args[2], &h);
-    OH_LOG_INFO(LOG_APP, "[MW-NAPI] resizeRenderer tl=%{public}u %{public}dx%{public}d", tid, w, h);
-    PluginManager::GetInstance()->ResizeRenderer(tid, w, h);
-    return nullptr;
-}
-
-// -- NAPI: destroyRenderer -- (XComponentController.onSurfaceDestroyed 调用)
-static napi_value DestroyRenderer(napi_env env, napi_callback_info info) {
-    size_t argc = 1;
-    napi_value args[1];
-    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-    uint32_t tid = 0;
-    if (argc >= 1) {
-        napi_get_value_uint32(env, args[0], &tid);
-    }
-    OH_LOG_INFO(LOG_APP, "[MW-NAPI] destroyRenderer tl=%{public}u", tid);
-    PluginManager::GetInstance()->DestroyToplevel(tid);
-    return nullptr;
-}
-
 // -- NAPI: registerHostWindow -- (ets 各 Ability 注册主窗口 id, 供
 // OH_WindowManager_LockCursor 锁定光标用 — 仅获焦窗口能锁, 逐个尝试)
 static napi_value RegisterHostWindow(napi_env env, napi_callback_info info) {
@@ -136,6 +80,10 @@ static napi_value Init(napi_env env, napi_value exports) {
     const napi_property_descriptor desc[] = {
         // Surface 生命周期函数绑定。（暂留，未来具体实现）
         {"bindXComponent",          nullptr, hgs::surface::BindXComponent,          nullptr, nullptr, nullptr, napi_default, nullptr },
+        // 渲染器表管理 (定义暂在 plugin_manager, todo 迁入 egl_surface)
+        {"createRenderer",          nullptr, hgs::surface::CreateRendererNAPI,      nullptr, nullptr, nullptr, napi_default, nullptr },
+        {"resizeRenderer",          nullptr, hgs::surface::ResizeRendererNAPI,      nullptr, nullptr, nullptr, napi_default, nullptr },
+        {"destroyRenderer",         nullptr, hgs::surface::DestroyRendererNAPI,     nullptr, nullptr, nullptr, napi_default, nullptr },
         // 鼠标锁定函数绑定（暂时使用 ETS 实现，后续考虑更换为 Native 实现）
         {"setPointerLockCallback",  nullptr, hgs::pe::SetPointerLockCallbackNAPI,   nullptr, nullptr, nullptr, napi_default, nullptr },
         // IME 相关
@@ -167,9 +115,6 @@ static napi_value Init(napi_env env, napi_value exports) {
         {"sendPointerEvent",        nullptr, hgs::im::SendPointerEventNAPI,         nullptr, nullptr, nullptr, napi_default, nullptr },
         {"sendKeyEvent",            nullptr, hgs::im::SendKeyEventNAPI,             nullptr, nullptr, nullptr, napi_default, nullptr },
         {"sendScrollEvent",         nullptr, hgs::im::SendScrollEventNAPI,          nullptr, nullptr, nullptr, napi_default, nullptr },
-        {"createRenderer",        nullptr, CreateRenderer,        nullptr, nullptr, nullptr, napi_default, nullptr },
-        {"resizeRenderer",        nullptr, ResizeRenderer,        nullptr, nullptr, nullptr, napi_default, nullptr },
-        {"destroyRenderer",       nullptr, DestroyRenderer,       nullptr, nullptr, nullptr, napi_default, nullptr },
         {"registerHostWindow",    nullptr, RegisterHostWindow,    nullptr, nullptr, nullptr, napi_default, nullptr },
         {"dumpWindowLayout",      nullptr, DumpWindowLayout,      nullptr, nullptr, nullptr, napi_default, nullptr },
         {"initGameController",        nullptr, InitGameController,        nullptr, nullptr, nullptr, napi_default, nullptr },

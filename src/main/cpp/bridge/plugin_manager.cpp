@@ -1,6 +1,7 @@
 #include "plugin_manager.h"
 #include "compositor/wayland_server.h"
 #include <native_window/external_window.h>
+#include <napi/native_api.h>
 #include <algorithm>
 
 #undef LOG_TAG
@@ -145,3 +146,71 @@ void PluginManager::MoveRendererToToplevel(uint32_t oldId, uint32_t newId) {
     toplevelRenderers_[newId] = std::move(it->second);
     toplevelRenderers_.erase(it);
 }
+
+// ========================================================================
+//  NAPI Export
+// ========================================================================
+
+// todo: 未来放入 egl_surface -> 改为 native 实现。目前暂时放在这里
+namespace hgs {
+namespace surface {
+
+// -- NAPI: createRenderer -- (XComponentController.onSurfaceCreated 调用)
+napi_value CreateRendererNAPI(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value args[2];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    if (argc < 2) {
+        OH_LOG_ERROR(LOG_APP, "[MW-NAPI] createRenderer: need 2 args (toplevelId, surfaceId)");
+        return nullptr;
+    }
+    uint32_t tid = 0;
+    napi_get_value_uint32(env, args[0], &tid);
+    int64_t surfaceId = 0;
+    bool lossless = true;
+    napi_status s = napi_get_value_bigint_int64(env, args[1], &surfaceId, &lossless);
+    if (s != napi_ok) {
+        OH_LOG_ERROR(LOG_APP, "[MW-NAPI] createRenderer: BIGINT parse failed status=%{public}d", s);
+        return nullptr;
+    }
+    OH_LOG_INFO(LOG_APP, "[MW-NAPI] createRenderer tl=%{public}u surfaceId=%{public}ld", tid, surfaceId);
+    PluginManager::GetInstance()->CreateRenderer(tid, surfaceId);
+    return nullptr;
+}
+
+// -- NAPI: resizeRenderer -- (XComponentController.onSurfaceChanged 调用)
+napi_value ResizeRendererNAPI(napi_env env, napi_callback_info info) {
+    size_t argc = 3;
+    napi_value args[3];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    if (argc < 3) {
+        OH_LOG_ERROR(LOG_APP, "[MW-NAPI] resizeRenderer: need 3 args (toplevelId, w, h)");
+        return nullptr;
+    }
+    uint32_t tid = 0;
+    napi_get_value_uint32(env, args[0], &tid);
+    int32_t w = 0, h = 0;
+    napi_get_value_int32(env, args[1], &w);
+    napi_get_value_int32(env, args[2], &h);
+    OH_LOG_INFO(LOG_APP, "[MW-NAPI] resizeRenderer tl=%{public}u %{public}dx%{public}d", tid, w, h);
+    PluginManager::GetInstance()->ResizeRenderer(tid, w, h);
+    return nullptr;
+}
+
+// -- NAPI: destroyRenderer -- (XComponentController.onSurfaceDestroyed 调用)
+napi_value DestroyRendererNAPI(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    uint32_t tid = 0;
+    if (argc >= 1) {
+        napi_get_value_uint32(env, args[0], &tid);
+    }
+    OH_LOG_INFO(LOG_APP, "[MW-NAPI] destroyRenderer tl=%{public}u", tid);
+    PluginManager::GetInstance()->DestroyToplevel(tid);
+    return nullptr;
+}
+
+} // namespace surface
+} // namespace hgs
+
