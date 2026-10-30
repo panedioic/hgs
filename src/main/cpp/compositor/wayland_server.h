@@ -356,5 +356,17 @@ napi_value RaiseToplevelNAPI(napi_env env, napi_callback_info info);
 napi_value SetToplevelVisibleNAPI(napi_env env, napi_callback_info info);
 
 } // namespace tl
+
+namespace ws {
+
+napi_value StartServerNAPI(napi_env env, napi_callback_info info);
+napi_value StopServerNAPI(napi_env env, napi_callback_info info);
+napi_value SetOutputSizeNAPI(napi_env env, napi_callback_info info);
+napi_value SetDisplayScaleNAPI(napi_env env, napi_callback_info info);
+napi_value SetDesktopModeNAPI(napi_env env, napi_callback_info info);
+napi_value GetDesktopRootIdNAPI(napi_env env, napi_callback_info info);
+napi_value SetStateCallbackNAPI(napi_env env, napi_callback_info info);
+
+} // namespace ws
 } // namespace hgs
 

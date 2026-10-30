@@ -11,6 +11,7 @@
 #include "protocols/xdg-shell-server-protocol.h"
 #include <algorithm>
 #include <cstring>
+#include <cstdlib>
 #include <ctime>
 #include <cmath>
 #include <cerrno>
@@ -725,5 +726,127 @@ napi_value SetToplevelVisibleNAPI(napi_env env, napi_callback_info info) {
 }
 
 } // namespace tl
+
+namespace ws {
+
+// -- NAPI: startServer --
+napi_value StartServerNAPI(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+
+    char path[512] = {};
+    napi_get_value_string_utf8(env, args[0], path, sizeof(path), nullptr);
+
+    OH_LOG_WARN(LOG_APP, "[NAPI] startServer: %{public}s", path);
+    // 确保 socket 父目录存在 (WINEPREFIX=.wine/)
+    {
+        std::string sockDir = path;
+        auto pos = sockDir.find_last_of('/');
+        if (pos != std::string::npos) {
+            sockDir = sockDir.substr(0, pos);
+            mkdir(sockDir.c_str(), 0755);
+        }
+    }
+    bool ok = WaylandServer::GetInstance()->Start(path);
+    OH_LOG_WARN(LOG_APP, "[NAPI] startServer result: %{public}s", ok ? "OK" : "FAIL");
+    // 确认 socket 文件存在
+    if (ok) {
+        struct stat st;
+        int sr = stat(path, &st);
+        OH_LOG_WARN(LOG_APP, "[NAPI] wayland socket stat=%{public}d (errno=%{public}d)",
+                    sr, sr == 0 ? 0 : errno);
+    }
+
+    napi_value r;
+    napi_get_boolean(env, ok, &r);
+    return r;
+}
+
+// -- NAPI: stopServer — 停止内嵌 Wayland compositor --
+napi_value StopServerNAPI(napi_env, napi_callback_info) {
+    WaylandServer::GetInstance()->Stop();
+    return nullptr;
+}
+
+// -- NAPI: setOutputSize --
+napi_value SetOutputSizeNAPI(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value args[2];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    if (argc < 2) return nullptr;
+    int32_t w, h;
+    napi_get_value_int32(env, args[0], &w);
+    napi_get_value_int32(env, args[1], &h);
+    WaylandServer::GetInstance()->SetOutputSize(w, h);
+    return nullptr;
+}
+
+// 已无效: C++ 坐标换算不使用 display scale (letterbox 由 renderer viewport 推导,
+// globalDisplayScale_ 只写不读已删除)。保留导出仅为兼容 ArkTS 侧调用, 收到直接忽略。
+napi_value SetDisplayScaleNAPI(napi_env env, napi_callback_info info) {
+    (void)env;
+    (void)info;
+    return nullptr;
+}
+
+napi_value SetDesktopModeNAPI(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    if (argc >= 1) {
+        bool on;
+        napi_get_value_bool(env, args[0], &on);
+        WaylandServer::GetInstance()->SetDesktopMode(on);
+        OH_LOG_INFO(LOG_APP, "[MW-NAPI] setDesktopMode = %{public}s", on ? "true" : "false");
+    }
+    return nullptr;
+}
+
+napi_value GetDesktopRootIdNAPI(napi_env env, napi_callback_info) {
+    uint32_t id = WaylandServer::GetInstance()->GetDesktopRootToplevelId();
+    napi_value r;
+    napi_create_uint32(env, id, &r);
+    return r;
+}
+
+// -- State 回调 -> ArkTS (合成器 FireState: evt:desktop-ready 等) --
+static void CallJsState(napi_env env, napi_value cb, void*, void* data) {
+    char* msg = static_cast<char*>(data);
+    if (env && cb && msg) {
+        napi_value undef, arg;
+        napi_get_undefined(env, &undef);
+        napi_create_string_utf8(env, msg, NAPI_AUTO_LENGTH, &arg);
+        napi_call_function(env, undef, cb, 1, &arg, nullptr);
+    }
+    free(msg);
+}
+
+// 状态通道 TSFN (setStateCallback 注册; FireState 经 stateCb_ 投递到这里)
+static napi_threadsafe_function gHgsStateTsfn = nullptr;
+
+napi_value SetStateCallbackNAPI(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+
+    if (gHgsStateTsfn) {
+        napi_release_threadsafe_function(gHgsStateTsfn, napi_tsfn_release);
+        gHgsStateTsfn = nullptr;
+    }
+    napi_value name;
+    napi_create_string_utf8(env, "HgsState", NAPI_AUTO_LENGTH, &name);
+    napi_create_threadsafe_function(env, args[0], nullptr, name,
+                                     0, 1, nullptr, nullptr, nullptr, CallJsState, &gHgsStateTsfn);
+    // 注入 hgs 侧 WaylandServer (合成器域迁入后, FireState 通道归 hgs)
+    WaylandServer::GetInstance()->SetStateCallback([](const char* st) {
+        if (gHgsStateTsfn) {
+            napi_call_threadsafe_function(gHgsStateTsfn, strdup(st), napi_tsfn_blocking);
+        }
+    });
+    return nullptr;
+}
+
+} // namespace ws
 } // namespace hgs
 
