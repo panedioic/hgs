@@ -57,6 +57,7 @@ add_library(hgs SHARED
     seam/symbol_resolver.cpp
 
     # ── 真实 EGL 渲染器 + 输入 ──
+    graphics/egl_surface.cpp
     graphics/egl_renderer.cpp
     graphics/shader_utils.cpp
     bridge/plugin_manager.cpp
