@@ -8,3 +8,7 @@
 /.appanalyzer
 /BuildProfile.ets
 oh-package-lock.json5
+
+# 预编译原生依赖 (scripts/build_all.sh 产物, 二进制不入库) / 下载的上游源码
+/libs
+/thirdparty
