@@ -42,7 +42,10 @@ cpp_link_args = ['-fuse-ld=lld', '--target=$TARGET', '--sysroot=$SYSROOT', '-L$S
 [properties]
 needs_exe_wrapper = true
 pkg_config_libdir = '$SYSROOT_EXT_PC:$SYSROOT_EXT_LIB/pkgconfig'
-sys_root = '$SYSROOT'
+# 不设 sys_root (与 WineHua gen_cross_file 同结论): 编译器 --sysroot 已在
+# c_args/c_link_args 中; 设了会让 meson 给交叉 pkg-config 加
+# PKG_CONFIG_SYSROOT_DIR, 把 sysroot-ext 绝对路径 .pc 的变量值 (如
+# wayland-protocols pkgdatadir) 再拼一层 sysroot 前缀 → 路径畸形
 
 [host_machine]
 system     = 'linux'

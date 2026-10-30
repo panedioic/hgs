@@ -84,6 +84,19 @@ THIRD_DIR="$ROOT/thirdparty"
 WAYLAND_SRC="$(resolve_src WAYLAND_SRC "$THIRD_DIR/wayland" "$ROOT/../thirdparty/wayland" || true)"
 LIBFFI_SRC="$(resolve_src LIBFFI_SRC "$THIRD_DIR/libffi" "$ROOT/../thirdparty/libffi" || true)"
 WAYLAND_PROTOCOLS_SRC="$(resolve_src WAYLAND_PROTOCOLS_SRC "$THIRD_DIR/wayland-protocols" "$ROOT/../thirdparty/wayland-protocols" || true)"
+FREETYPE_SRC="$(resolve_src FREETYPE_SRC "$THIRD_DIR/freetype" "$ROOT/../thirdparty/freetype" || true)"
+LIBXML2_SRC="$(resolve_src LIBXML2_SRC "$THIRD_DIR/libxml2" "$ROOT/../thirdparty/libxml2" || true)"
+XKBCOMMON_SRC="$(resolve_src XKBCOMMON_SRC "$THIRD_DIR/libxkbcommon" "$ROOT/../thirdparty/libxkbcommon" || true)"
+
+# ── CMake (freetype/libxml2 走 OHOS 工具链文件, 需 SDK 自带老版 cmake;
+#       系统 cmake 4.x 移除了 <3.5 兼容, freetype/libxml2 会 min-version 失败) ──
+if [ -x "$OHOS_SDK/native/build-tools/cmake/bin/cmake" ]; then
+    CMAKE_BIN="$OHOS_SDK/native/build-tools/cmake/bin/cmake"
+else
+    CMAKE_BIN="$(command -v cmake || true)"
+fi
+[ -n "$CMAKE_BIN" ] || { echo "[ERROR] 缺 cmake" >&2; exit 1; }
+OHOS_TOOLCHAIN="$OHOS_SDK/native/build/cmake/ohos.toolchain.cmake"
 
 # ── 版本与下载地址 (与 WineHua submodule 指针对齐) ──
 LIBFFI_VERSION="3.4.6"
@@ -92,6 +105,12 @@ WAYLAND_VERSION="1.22.0"
 WAYLAND_URL="https://gitlab.freedesktop.org/wayland/wayland/-/releases/${WAYLAND_VERSION}/downloads/wayland-${WAYLAND_VERSION}.tar.xz"
 WAYLAND_PROTOCOLS_VERSION="1.39"
 WAYLAND_PROTOCOLS_URL="https://gitlab.freedesktop.org/wayland/wayland-protocols/-/releases/${WAYLAND_PROTOCOLS_VERSION}/downloads/wayland-protocols-${WAYLAND_PROTOCOLS_VERSION}.tar.xz"
+FREETYPE_VERSION="2.13.3"
+FREETYPE_URL="https://github.com/freetype/freetype/releases/download/VER-${FREETYPE_VERSION}/freetype-${FREETYPE_VERSION}.tar.xz"
+LIBXML2_VERSION="2.12.0"
+LIBXML2_URL="https://gitlab.gnome.org/GNOME/libxml2/-/releases/v${LIBXML2_VERSION}/downloads/libxml2-${LIBXML2_VERSION}.tar.xz"
+XKBCOMMON_VERSION="1.7.0"
+XKBCOMMON_URL="https://github.com/xkbcommon/libxkbcommon/releases/download/xkbcommon-${XKBCOMMON_VERSION}/libxkbcommon-${XKBCOMMON_VERSION}.tar.xz"
 
 # ── 下载辅助 (WSL2/容器内直连上游不通时, 预设 https_proxy 即可) ──
 download() {  # download <url> <输出文件>

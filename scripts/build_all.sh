@@ -11,7 +11,10 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 bash "$SCRIPT_DIR/generate_crossfile.sh"
 bash "$SCRIPT_DIR/build_libffi.sh"
+bash "$SCRIPT_DIR/build_freetype.sh"
+bash "$SCRIPT_DIR/build_xml2.sh"         # xkbregistry 依赖
 bash "$SCRIPT_DIR/build_wayland.sh"      # 内部确保 scanner 已编译
+bash "$SCRIPT_DIR/build_xkbcommon.sh"    # 依赖 libffi/libxml2/wayland .pc
 
 # 产物清单
 # shellcheck source=env.sh
