@@ -19,6 +19,7 @@
 #include "input/controller/controller_napi.h"
 #include "input/text_input.h"
 #include "graphics/egl_surface.h"
+#include "logger/logger.h"
 
 namespace {
 
@@ -109,6 +110,10 @@ static napi_value Init(napi_env env, napi_value exports) {
         {"controllerGetSocketPath",     nullptr, ControllerGetSocketPath,           nullptr, nullptr, nullptr, napi_default, nullptr },
         {"controllerSetOutputMode",     nullptr, ControllerSetOutputMode,           nullptr, nullptr, nullptr, napi_default, nullptr },
         {"controllerGetOutputMode",     nullptr, ControllerGetOutputMode,           nullptr, nullptr, nullptr, napi_default, nullptr },
+        // logger
+        {"LOGI",                        nullptr, logger::logiNAPI,                  nullptr, nullptr, nullptr, napi_default, nullptr },
+        {"LOGW",                        nullptr, logger::logwNAPI,                  nullptr, nullptr, nullptr, napi_default, nullptr },
+        {"LOGE",                        nullptr, logger::logeNAPI,                  nullptr, nullptr, nullptr, napi_default, nullptr },
         // 诊断工具
         {"dumpWindowLayout",            nullptr, DumpWindowLayout,                  nullptr, nullptr, nullptr, napi_default, nullptr },
 

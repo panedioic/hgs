@@ -62,6 +62,7 @@ add_library(hgs SHARED
     graphics/shader_utils.cpp
     bridge/plugin_manager.cpp
     common/perf_utils.cpp
+    logger/logger.cpp
     input/seat.cpp
     input/input_manager.cpp
     input/pointer_extras.cpp
