@@ -36,30 +36,6 @@ namespace {
 // IME、手柄/控制器。宿主 (entry) 的 ArkTS 侧经 libhgs.so 调用同名导出。
 // ============================================================================
 
-// -- Toplevel 回调 -> ArkTS --
-static napi_threadsafe_function gToplevelTsfn = nullptr;
-
-struct ToplevelEvent {
-    uint32_t id;
-    std::string event;
-    std::string data;
-};
-
-static void CallJsToplevel(napi_env env, napi_value cb, void*, void* raw) {
-    auto* ev = static_cast<ToplevelEvent*>(raw);
-    if (env && cb && ev) {
-        OH_LOG_INFO(LOG_APP, "[MW-TSCB] calling JS toplevel cb: id=%{public}u event=%{public}s data=%{public}s",
-                    ev->id, ev->event.c_str(), ev->data.c_str());
-        napi_value undef, args[3];
-        napi_get_undefined(env, &undef);
-        napi_create_uint32(env, ev->id, &args[0]);
-        napi_create_string_utf8(env, ev->event.c_str(), NAPI_AUTO_LENGTH, &args[1]);
-        napi_create_string_utf8(env, ev->data.c_str(), NAPI_AUTO_LENGTH, &args[2]);
-        napi_call_function(env, undef, cb, 3, args, nullptr);
-    }
-    delete ev;
-}
-
 // -- NAPI: startServer --
 static napi_value StartServer(napi_env env, napi_callback_info info) {
     size_t argc = 1;
@@ -92,97 +68,6 @@ static napi_value StartServer(napi_env env, napi_callback_info info) {
     napi_value r;
     napi_get_boolean(env, ok, &r);
     return r;
-}
-
-// -- NAPI: setToplevelCallback --
-static napi_value SetToplevelCallback(napi_env env, napi_callback_info info) {
-    size_t argc = 1;
-    napi_value args[1];
-    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-
-    if (gToplevelTsfn) {
-        napi_release_threadsafe_function(gToplevelTsfn, napi_tsfn_release);
-        gToplevelTsfn = nullptr;
-    }
-
-    napi_value name;
-    napi_create_string_utf8(env, "WLToplevel", NAPI_AUTO_LENGTH, &name);
-    napi_create_threadsafe_function(env, args[0], nullptr, name,
-                                     0, 1, nullptr, nullptr, nullptr, CallJsToplevel, &gToplevelTsfn);
-
-    WaylandServer::GetInstance()->SetToplevelCallback([](uint32_t id, const char* event, const char* data) {
-        if (gToplevelTsfn) {
-            OH_LOG_INFO(LOG_APP, "[MW-TSCB] enqueue toplevel cb: id=%{public}u event=%{public}s", id, event);
-            auto* ev = new ToplevelEvent{id, event ? event : "", data ? data : "{}"};
-            napi_call_threadsafe_function(gToplevelTsfn, ev, napi_tsfn_blocking);
-        } else {
-            OH_LOG_WARN(LOG_APP, "[MW-TSCB] toplevel cb dropped (tsfn not ready): id=%{public}u event=%{public}s",
-                        id, event);
-        }
-    });
-
-    return nullptr;
-}
-
-// -- NAPI: getCurrentToplevelId -- (WineWindow.aboutToAppear 同步读取, 无竞态)
-static napi_value GetCurrentToplevelId(napi_env env, napi_callback_info info) {
-    uint32_t id = PluginManager::GetInstance()->DequeuePendingToplevel();
-    OH_LOG_INFO(LOG_APP, "[MW-NAPI] getCurrentToplevelId = %{public}u", id);
-    napi_value r;
-    napi_create_uint32(env, id, &r);
-    return r;
-}
-
-// -- NAPI: setPendingToplevel -- (WineWindowAbility 在 loadContent 前调用)
-static napi_value SetPendingToplevel(napi_env env, napi_callback_info info) {
-    size_t argc = 1;
-    napi_value args[1];
-    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-    uint32_t id = 0;
-    napi_get_value_uint32(env, args[0], &id);
-    PluginManager::GetInstance()->SetPendingToplevel(id);
-    OH_LOG_INFO(LOG_APP, "[MW-NAPI] setPendingToplevel id=%{public}u", id);
-    return nullptr;
-}
-
-// -- NAPI: cancelPendingToplevel -- (窗口在 loadContent 前被销毁时清除队列残坑,
-//   防止后续页面出队拿到死 id → 渲染器挂错 toplevel 黑屏; 未在队列时 no-op)
-static napi_value CancelPendingToplevel(napi_env env, napi_callback_info info) {
-    size_t argc = 1;
-    napi_value args[1];
-    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-    uint32_t id = 0;
-    napi_get_value_uint32(env, args[0], &id);
-    PluginManager::GetInstance()->CancelPendingToplevel(id);
-    return nullptr;
-}
-
-// -- NAPI: destroyToplevel -- (ArkTS 关闭子窗口后调用)
-static napi_value DestroyToplevel(napi_env env, napi_callback_info info) {
-    size_t argc = 1;
-    napi_value args[1];
-    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-    uint32_t id = 0;
-    napi_get_value_uint32(env, args[0], &id);
-    PluginManager::GetInstance()->DestroyToplevel(id);
-    // 相对模式锁定兜底: 宿主主动销毁 toplevel (WWA 关窗) 时释放 host 锁定 —
-    // 游戏卡死时 wine 不响应 sendToplevelClose, relative_pointer 永不销毁,
-    // 正常解锁回调不来 (见 PointerExtras::ReleaseLockForToplevel)
-    PointerExtras::GetInstance()->ReleaseLockForToplevel(id);
-    OH_LOG_INFO(LOG_APP, "[MW-NAPI] destroyToplevel id=%{public}u", id);
-    return nullptr;
-}
-
-// -- NAPI: sendToplevelClose -- (通知 Wine 关闭窗口)
-static napi_value SendToplevelClose(napi_env env, napi_callback_info info) {
-    size_t argc = 1;
-    napi_value args[1];
-    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-    uint32_t id = 0;
-    napi_get_value_uint32(env, args[0], &id);
-    OH_LOG_INFO(LOG_APP, "[MW-NAPI] sendToplevelClose id=%{public}u", id);
-    WaylandServer::GetInstance()->SendToplevelClose(id);
-    return nullptr;
 }
 
 // -- NAPI: createRenderer -- (XComponentController.onSurfaceCreated 调用)
@@ -391,91 +276,6 @@ static napi_value DumpWindowLayout(napi_env env, napi_callback_info info) {
     return nullptr;
 }
 
-static napi_value NotifyToplevelResize(napi_env env, napi_callback_info info) {
-    size_t argc = 4;
-    napi_value args[4];
-    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-    if (argc < 3) return nullptr;
-    uint32_t tl; int32_t w, h;
-    bool resizing = false;
-    napi_get_value_uint32(env, args[0], &tl);
-    napi_get_value_int32(env, args[1], &w);
-    napi_get_value_int32(env, args[2], &h);
-    if (argc >= 4) napi_get_value_bool(env, args[3], &resizing);
-    OH_LOG_INFO(LOG_APP, "[NAPI] notifyToplevelResize tl=%{public}u %{public}dx%{public}d resize=%{public}s",
-                tl, w, h, resizing ? "yes" : "no");
-    WaylandServer::GetInstance()->NotifyToplevelResize(tl, w, h, resizing);
-    return nullptr;
-}
-
-// 拖拽缩放结束 (ArkTS windowRectChange DRAG_END): 发 configure(0,0) 清 RESIZING
-// 状态, Wine 保持当前尺寸 (0 尺寸 → SWP_NOSIZE) 并退出 size-move。
-static napi_value NotifyToplevelResizeEnd(napi_env env, napi_callback_info info) {
-    size_t argc = 1;
-    napi_value args[1];
-    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-    if (argc < 1) return nullptr;
-    uint32_t tl;
-    napi_get_value_uint32(env, args[0], &tl);
-    OH_LOG_INFO(LOG_APP, "[NAPI] notifyToplevelResizeEnd tl=%{public}u", tl);
-    WaylandServer::GetInstance()->NotifyToplevelResize(tl, 0, 0, false);
-    return nullptr;
-}
-
-// Desktop 模式: 接收物理像素坐标 (px, py), 通过 viewport 映射为 Wine 逻辑坐标后查找
-// resize 后 surface 和逻辑尺寸比例变化, 由 renderer viewport 保证映射正确
-static napi_value FindToplevelAt(napi_env env, napi_callback_info info) {
-    size_t argc = 2;
-    napi_value args[2];
-    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-    if (argc < 2) return nullptr;
-    int32_t px, py;  // 物理像素坐标
-    napi_get_value_int32(env, args[0], &px);
-    napi_get_value_int32(env, args[1], &py);
-
-    auto* ws = WaylandServer::GetInstance();
-    uint32_t rootId = ws->GetDesktopRootToplevelId();
-    wl_fixed_t wx, wy;
-    InputManager::GetInstance()->CoordTransform(px, py, rootId > 0 ? rootId : 1, &wx, &wy);
-    int32_t lx = wl_fixed_to_int(wx);
-    int32_t ly = wl_fixed_to_int(wy);
-
-    uint32_t id = ws->FindToplevelAt(lx, ly);
-    napi_value result;
-    napi_create_uint32(env, id, &result);
-    return result;
-}
-
-// Desktop 模式: 将 toplevel 提到 Z-order 最顶层
-static napi_value RaiseToplevel(napi_env env, napi_callback_info info) {
-    size_t argc = 1;
-    napi_value args[1];
-    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-    if (argc < 1) return nullptr;
-    uint32_t tl;
-    napi_get_value_uint32(env, args[0], &tl);
-    // 用户显式操作 (任务栏/窗口点击) 路径: 已 fullscreen 的目标会重新取
-    // 全屏优先级号, 支撑两个全屏窗口间的主动切换
-    WaylandServer::GetInstance()->RaiseToplevel(tl, true);
-    return nullptr;
-}
-
-static napi_value SetToplevelVisible(napi_env env, napi_callback_info info) {
-    size_t argc = 2;
-    napi_value args[2];
-    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-    if (argc < 2) return nullptr;
-    uint32_t tl; bool visible;
-    napi_get_value_uint32(env, args[0], &tl);
-    napi_get_value_bool(env, args[1], &visible);
-    InputManager::GetInstance()->SetToplevelVisible(tl, visible);
-    if (visible) {
-        // 6A: 兼容别名 NotifyWindowRestored 已删, 直调语义方法 (同实现同值)
-        WaylandServer::GetInstance()->SetToplevelRestored(tl);
-    }
-    return nullptr;
-}
-
 // -- State 回调 -> ArkTS (合成器 FireState: evt:desktop-ready 等) --
 static void CallJsState(napi_env env, napi_value cb, void*, void* data) {
     char* msg = static_cast<char*>(data);
@@ -533,15 +333,21 @@ static napi_value Init(napi_env env, napi_value exports) {
         {"sendImeCommit",           nullptr, hgs::ti::SendImeCommitNAPI,            nullptr, nullptr, nullptr, napi_default, nullptr },
         {"sendImePreedit",          nullptr, hgs::ti::SendImePreeditNAPI,           nullptr, nullptr, nullptr, napi_default, nullptr },
         {"imeBackspace",            nullptr, hgs::ti::ImeBackspaceNAPI,             nullptr, nullptr, nullptr, napi_default, nullptr },
+        // TopLevel 相关
+        {"setToplevelCallback",     nullptr, hgs::tl::SetToplevelCallbackNAPI,          nullptr, nullptr, nullptr, napi_default, nullptr },
+        {"getCurrentToplevelId",    nullptr, hgs::tl::GetCurrentToplevelIdNAPI,         nullptr, nullptr, nullptr, napi_default, nullptr },
+        {"setPendingToplevel",      nullptr, hgs::tl::SetPendingToplevelNAPI,           nullptr, nullptr, nullptr, napi_default, nullptr },
+        {"cancelPendingToplevel",   nullptr, hgs::tl::CancelPendingToplevelNAPI,        nullptr, nullptr, nullptr, napi_default, nullptr },
+        {"destroyToplevel",         nullptr, hgs::tl::DestroyToplevelNAPI,              nullptr, nullptr, nullptr, napi_default, nullptr },
+        {"sendToplevelClose",       nullptr, hgs::tl::SendToplevelCloseNAPI,            nullptr, nullptr, nullptr, napi_default, nullptr },
+        {"notifyToplevelResize",    nullptr, hgs::tl::NotifyToplevelResizeNAPI,         nullptr, nullptr, nullptr, napi_default, nullptr },
+        {"notifyToplevelResizeEnd", nullptr, hgs::tl::NotifyToplevelResizeEndNAPI,      nullptr, nullptr, nullptr, napi_default, nullptr },
+        {"findToplevelAt",          nullptr, hgs::tl::FindToplevelAtNAPI,               nullptr, nullptr, nullptr, napi_default, nullptr },
+        {"raiseToplevel",           nullptr, hgs::tl::RaiseToplevelNAPI,                nullptr, nullptr, nullptr, napi_default, nullptr },
+        {"setToplevelVisible",      nullptr, hgs::tl::SetToplevelVisibleNAPI,           nullptr, nullptr, nullptr, napi_default, nullptr },
         {"startServer",           nullptr, StartServer,           nullptr, nullptr, nullptr, napi_default, nullptr },
         {"setStateCallback",      nullptr, SetStateCallback,      nullptr, nullptr, nullptr, napi_default, nullptr },
         {"stopServer",            nullptr, StopServer,            nullptr, nullptr, nullptr, napi_default, nullptr },
-        {"setToplevelCallback",   nullptr, SetToplevelCallback,   nullptr, nullptr, nullptr, napi_default, nullptr },
-        {"getCurrentToplevelId",  nullptr, GetCurrentToplevelId,  nullptr, nullptr, nullptr, napi_default, nullptr },
-        {"setPendingToplevel",    nullptr, SetPendingToplevel,    nullptr, nullptr, nullptr, napi_default, nullptr },
-        {"cancelPendingToplevel", nullptr, CancelPendingToplevel, nullptr, nullptr, nullptr, napi_default, nullptr },
-        {"destroyToplevel",       nullptr, DestroyToplevel,       nullptr, nullptr, nullptr, napi_default, nullptr },
-        {"sendToplevelClose",     nullptr, SendToplevelClose,     nullptr, nullptr, nullptr, napi_default, nullptr },
         {"createRenderer",        nullptr, CreateRenderer,        nullptr, nullptr, nullptr, napi_default, nullptr },
         {"resizeRenderer",        nullptr, ResizeRenderer,        nullptr, nullptr, nullptr, napi_default, nullptr },
         {"destroyRenderer",       nullptr, DestroyRenderer,       nullptr, nullptr, nullptr, napi_default, nullptr },
@@ -554,11 +360,6 @@ static napi_value Init(napi_env env, napi_value exports) {
         {"sendScrollEvent",       nullptr, SendScrollEvent,       nullptr, nullptr, nullptr, napi_default, nullptr },
         {"registerHostWindow",    nullptr, RegisterHostWindow,    nullptr, nullptr, nullptr, napi_default, nullptr },
         {"dumpWindowLayout",      nullptr, DumpWindowLayout,      nullptr, nullptr, nullptr, napi_default, nullptr },
-        {"notifyToplevelResize",  nullptr, NotifyToplevelResize,  nullptr, nullptr, nullptr, napi_default, nullptr },
-        {"notifyToplevelResizeEnd",nullptr,NotifyToplevelResizeEnd,nullptr,nullptr, nullptr, napi_default, nullptr },
-        {"findToplevelAt",        nullptr, FindToplevelAt,        nullptr, nullptr, nullptr, napi_default, nullptr },
-        {"raiseToplevel",         nullptr, RaiseToplevel,         nullptr, nullptr, nullptr, napi_default, nullptr },
-        {"setToplevelVisible",    nullptr, SetToplevelVisible,    nullptr, nullptr, nullptr, napi_default, nullptr },
         {"initGameController",        nullptr, InitGameController,        nullptr, nullptr, nullptr, napi_default, nullptr },
         {"cleanupGameController",     nullptr, CleanupGameController,     nullptr, nullptr, nullptr, napi_default, nullptr },
         {"isGamepadConnected",        nullptr, IsGamepadConnected,        nullptr, nullptr, nullptr, napi_default, nullptr },

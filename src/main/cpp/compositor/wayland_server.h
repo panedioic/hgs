@@ -11,6 +11,8 @@
 #include <unordered_map>
 #include <unordered_set>
 
+#include "napi/native_api.h"
+
 #include "compositor/frame/compositor_constants.h"
 #include "compositor/frame/display_policy.h"
 #include "compositor/toplevel/desktop_session_state.h"  // DesktopSessionState (重构第 6B 步: 会话共享状态 POD)
@@ -336,3 +338,23 @@ private:
 };
 
 #include "compositor/frame/surface_data.h"  // SurfaceData 已提取至独立头文件
+
+// 迁移期暂时仅对迁移函数纳入命名空间，后续再覆盖至全局
+namespace hgs {
+namespace tl {
+
+napi_value SetToplevelCallbackNAPI(napi_env env, napi_callback_info info);
+napi_value GetCurrentToplevelIdNAPI(napi_env env, napi_callback_info info);
+napi_value SetPendingToplevelNAPI(napi_env env, napi_callback_info info);
+napi_value CancelPendingToplevelNAPI(napi_env env, napi_callback_info info);
+napi_value DestroyToplevelNAPI(napi_env env, napi_callback_info info);
+napi_value SendToplevelCloseNAPI(napi_env env, napi_callback_info info);
+napi_value NotifyToplevelResizeNAPI(napi_env env, napi_callback_info info);
+napi_value NotifyToplevelResizeEndNAPI(napi_env env, napi_callback_info info);
+napi_value FindToplevelAtNAPI(napi_env env, napi_callback_info info);
+napi_value RaiseToplevelNAPI(napi_env env, napi_callback_info info);
+napi_value SetToplevelVisibleNAPI(napi_env env, napi_callback_info info);
+
+} // namespace tl
+} // namespace hgs
+
