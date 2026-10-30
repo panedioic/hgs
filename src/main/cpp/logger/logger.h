@@ -73,8 +73,8 @@ inline void LOGE(const char* fmt, ...) {
 
 namespace logger {
 
-// NAPI: LOGI/LOGW/LOGE(tag: string, msg: string) — ArkTS 侧日志入口。
-// 签名用 (tag, msg) 而非把 JS 数据当 printf fmt (格式串注入风险)。
+// NAPI: LOGI/LOGW/LOGE(msg: string) — ArkTS 侧日志入口, 单参数。
+// tag 语义由调用方自行拼进消息 (如 "[CLICK-PIPE] ..."), 不单独传。
 napi_value logiNAPI(napi_env env, napi_callback_info info);
 napi_value logwNAPI(napi_env env, napi_callback_info info);
 napi_value logeNAPI(napi_env env, napi_callback_info info);

@@ -1,9 +1,6 @@
 import { common } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
-import { hilog } from '@kit.PerformanceAnalysisKit';
-
-const DOMAIN = 0x0000;
-const TAG = '[HGS]';
+import hgs from 'libhgs.so';
 
 // 临时导出函数 (helloworld 第二步): 由 entry 调用, 拉起 hgs 的 HgsWindowAbility。
 // 正式迁移后, 该入口演进为 hgs 窗口管理的公开 API。
@@ -13,15 +10,15 @@ const TAG = '[HGS]';
 export function openHgsWindow(context: common.UIAbilityContext): void {
   const bundleName: string = context.abilityInfo?.bundleName
     ?? context.applicationInfo?.name ?? '';
-  hilog.info(DOMAIN, TAG, 'openHgsWindow bundle=%{public}s', bundleName);
+  hgs.LOGI(`[HGS] openHgsWindow bundle=${bundleName}`);
   context.startAbility({
     bundleName: bundleName,
     abilityName: 'HgsWindowAbility'
   })
     .then(() => {
-      hilog.info(DOMAIN, TAG, 'HgsWindowAbility started');
+      hgs.LOGI('[HGS] HgsWindowAbility started');
     })
     .catch((err: BusinessError) => {
-      hilog.error(DOMAIN, TAG, 'start HgsWindowAbility failed: %{public}d %{public}s', err.code, err.message);
+      hgs.LOGE(`[HGS] start HgsWindowAbility failed: ${err.code} ${err.message}`);
     });
 }

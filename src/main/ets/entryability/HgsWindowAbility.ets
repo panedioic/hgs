@@ -1,10 +1,7 @@
 import { AbilityConstant, UIAbility, Want } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
-import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
-
-const DOMAIN = 0x0000;
-const TAG = '[HGS-Ability]';
+import hgs from 'libhgs.so';
 
 // hgs 提供的窗口 Ability (helloworld 第二步)。
 // 载入宿主注册的占位页 (pages/HgsWindow, 由宿主 main_pages.json 注册),
@@ -12,20 +9,20 @@ const TAG = '[HGS-Ability]';
 // 正式迁移后, 页面与窗口管理逻辑逐步收进 hgs。
 export class HgsWindowAbility extends UIAbility {
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
-    hilog.info(DOMAIN, TAG, 'onCreate');
+    hgs.LOGI('[HGS-Ability] onCreate');
   }
 
   onWindowStageCreate(windowStage: window.WindowStage): void {
     windowStage.loadContent('pages/HgsWindow', (err: BusinessError) => {
       if (err.code) {
-        hilog.error(DOMAIN, TAG, 'loadContent failed: %{public}s', JSON.stringify(err));
+        hgs.LOGE(`[HGS-Ability] loadContent failed: ${JSON.stringify(err)}`);
         return;
       }
-      hilog.info(DOMAIN, TAG, 'page loaded');
+      hgs.LOGI('[HGS-Ability] page loaded');
     });
   }
 
   onDestroy(): void {
-    hilog.info(DOMAIN, TAG, 'onDestroy');
+    hgs.LOGI('[HGS-Ability] onDestroy');
   }
 }

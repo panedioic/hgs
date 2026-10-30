@@ -148,44 +148,41 @@ namespace logger {
 
 namespace {
 
-// 读 (tag, msg) 两个字符串参数; JS 数据不当 printf 格式串 (注入风险)
-bool ReadTagMsg(napi_env env, napi_callback_info info, std::string& tag, std::string& msg) {
-    size_t argc = 2;
-    napi_value args[2];
+// 读单个字符串参数 (tag 语义由调用方拼进消息)
+bool ReadMsg(napi_env env, napi_callback_info info, std::string& msg) {
+    size_t argc = 1;
+    napi_value args[1];
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-    if (argc < 2) return false;
+    if (argc < 1) return false;
     size_t len = 0;
     if (napi_get_value_string_utf8(env, args[0], nullptr, 0, &len) != napi_ok) return false;
-    tag.assign(len, '\0');
-    if (napi_get_value_string_utf8(env, args[0], len ? &tag[0] : nullptr, len + 1, &len) != napi_ok) return false;
-    if (napi_get_value_string_utf8(env, args[1], nullptr, 0, &len) != napi_ok) return false;
     msg.assign(len, '\0');
-    if (napi_get_value_string_utf8(env, args[1], len ? &msg[0] : nullptr, len + 1, &len) != napi_ok) return false;
+    if (napi_get_value_string_utf8(env, args[0], len ? &msg[0] : nullptr, len + 1, &len) != napi_ok) return false;
     return true;
 }
 
 }  // namespace
 
 napi_value logiNAPI(napi_env env, napi_callback_info info) {
-    std::string tag, msg;
-    if (ReadTagMsg(env, info, tag, msg)) {
-        Logger::GetInstance()->LogI("%s: %s", tag.c_str(), msg.c_str());
+    std::string msg;
+    if (ReadMsg(env, info, msg)) {
+        Logger::GetInstance()->LogI("%s", msg.c_str());
     }
     return nullptr;
 }
 
 napi_value logwNAPI(napi_env env, napi_callback_info info) {
-    std::string tag, msg;
-    if (ReadTagMsg(env, info, tag, msg)) {
-        Logger::GetInstance()->LogW("%s: %s", tag.c_str(), msg.c_str());
+    std::string msg;
+    if (ReadMsg(env, info, msg)) {
+        Logger::GetInstance()->LogW("%s", msg.c_str());
     }
     return nullptr;
 }
 
 napi_value logeNAPI(napi_env env, napi_callback_info info) {
-    std::string tag, msg;
-    if (ReadTagMsg(env, info, tag, msg)) {
-        Logger::GetInstance()->LogE("%s: %s", tag.c_str(), msg.c_str());
+    std::string msg;
+    if (ReadMsg(env, info, msg)) {
+        Logger::GetInstance()->LogE("%s", msg.c_str());
     }
     return nullptr;
 }

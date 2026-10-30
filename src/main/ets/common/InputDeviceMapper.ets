@@ -1,9 +1,6 @@
 // hgs/src/,ain/ets/components/InputDeviceMapper.ets
-import { hilog } from '@kit.PerformanceAnalysisKit';
+import hgs from 'libhgs.so';
 import { inputDevice } from '@kit.InputKit';
-
-const DOMAIN = 0x0000;
-const TAG = 'DEV-MAP';
 
 // InputDeviceMapper: 鼠标事件的 deviceId → 输入设备类型 映射, 以及 rawDelta →
 // 注入增量的最终缩放系数 (统一在 ArkTS, C++ 只做透传)。来源: ArkUI MouseEvent
@@ -50,13 +47,11 @@ class InputDeviceMapper {
       const data = inputDevice.getDeviceInfoSync(deviceId);
       if (data && Array.isArray(data.sources)) {
         const is = data.sources.indexOf('touchpad') >= 0;
-        hilog.info(DOMAIN, TAG, 'dev=%{public}d sources=%{public}s touchpad=%{public}d',
-          deviceId, JSON.stringify(data.sources), is ? 1 : 0);
+        hgs.LOGI(`[DEV-MAP] dev=${deviceId} sources=${JSON.stringify(data.sources)} touchpad=${is ? 1 : 0}`);
         return is;
       }
     } catch (e) {
-      hilog.warn(DOMAIN, TAG, 'getDeviceInfo(%{public}d) fail: %{public}s',
-        deviceId, JSON.stringify(e));
+      hgs.LOGW(`[DEV-MAP] getDeviceInfo(${deviceId}) fail: ${JSON.stringify(e)}`);
     }
     return false;
   }

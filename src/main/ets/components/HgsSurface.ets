@@ -1,5 +1,4 @@
 // hgs/src/main/ets/components/HgsSurface.ets
-import { hilog } from '@kit.PerformanceAnalysisKit';
 import hgs from 'libhgs.so';
 import { OH2EVDEV, EVDEV_KEY_ENTER } from '../common/KeyMap';
 import { mapMouseButton } from '../common/MouseMap';
@@ -7,7 +6,6 @@ import { InputDeviceMapper } from '../common/InputDeviceMapper';
 
 // ── 手势状态机常量 (参考原内容: DesktopLayer / WineWindow / WinePopup 同值) ──
 // 原引用形态 DesktopLayer.X / WinePointerMachine.X 在本组件统一为顶部常量。
-const DOMAIN: number = 0x0000;             // hilog 日志域
 const LONG_PRESS_MS: number = 500;         // 长按判定阈值 → 右键
 const DRAG_THRESHOLD: number = 10;         // 物理像素, 区分点击抖动和拖拽
 const DOUBLE_TAP_MS: number = 400;         // 双击时间窗
@@ -289,8 +287,7 @@ export struct HgsSurface {
       // 则 twoFingerActive 滞留, 下一次单指 Down 被 SCROLL-END 分支吞掉)
       if (ev.type === TouchType.Cancel) {
         if (this.isDragging) {
-          hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] %{public}s CANCEL-DRAG id=%{public}d px=(%{public}d,%{public}d)',
-            this.tag, this.pendingTl, this.pendingPx, this.pendingPy);
+          hgs.LOGI(`[CLICK-PIPE] [ArkTS] ${this.tag} CANCEL-DRAG id=${this.pendingTl} px=(${this.pendingPx},${this.pendingPy})`);
           hgs.sendPointerEvent(this.pendingTl, MouseAction.Release,
             this.pendingPx, this.pendingPy, mapMouseButton(1));
         }
@@ -323,8 +320,7 @@ export struct HgsSurface {
         if (!this.twoFingerActive) {
           this.twoFingerActive = true;
           this.twoFingerTl = this.toplevelId;
-          hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] %{public}s SCROLL-START id=%{public}d fingers=%{public}d',
-            this.tag, this.twoFingerTl, ev.touches.length);
+          hgs.LOGI(`[CLICK-PIPE] [ArkTS] ${this.tag} SCROLL-START id=${this.twoFingerTl} fingers=${ev.touches.length}`);
           this.twoFingerLastMidX = midX;
           this.twoFingerLastMidY = midY;
           this.twoFingerAccumY = 0;
@@ -340,7 +336,7 @@ export struct HgsSurface {
             hgs.sendScrollEvent(this.twoFingerTl, 0, sign, SCROLL_STEP_PX, midX, midY);
             this.twoFingerAccumY -= sign * SCROLL_STEP_PX;
             if (++this.scrollLogCounter % 5 === 0) {
-              hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] %{public}s SCROLL-V id=%{public}d', this.tag, this.twoFingerTl);
+              hgs.LOGI(`[CLICK-PIPE] [ArkTS] ${this.tag} SCROLL-V id=${this.twoFingerTl}`);
             }
           }
           while (Math.abs(this.twoFingerAccumX) >= SCROLL_STEP_PX) {
@@ -355,7 +351,7 @@ export struct HgsSurface {
       // ── 单指: 恢复双指状态 ──
       if (this.twoFingerActive) {
         this.twoFingerActive = false;
-        hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] %{public}s SCROLL-END', this.tag);
+        hgs.LOGI(`[CLICK-PIPE] [ArkTS] ${this.tag} SCROLL-END`);
         return;
       }
 
@@ -367,10 +363,10 @@ export struct HgsSurface {
       if (ev.type === TouchType.Down) {
         const tl = this.toplevelId;
         if (tl <= 0) {
-          hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] %{public}s TOUCH skipped (no target at %{public}d,%{public}d)', this.tag, px, py);
+          hgs.LOGI(`[CLICK-PIPE] [ArkTS] ${this.tag} TOUCH skipped (no target at ${px},${py})`);
           return;
         }
-        hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] %{public}s TOUCH id=%{public}d px=(%{public}d,%{public}d)', this.tag, tl, px, py);
+        hgs.LOGI(`[CLICK-PIPE] [ArkTS] ${this.tag} TOUCH id=${tl} px=(${px},${py})`);
         this.touchPending = true;
         this.isDragging = false;
         this.touchStartTime = Date.now();
@@ -389,7 +385,7 @@ export struct HgsSurface {
           this.touchPending = false;
           this.isDragging = true;
           this.lastTapTime = 0;
-          hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] %{public}s DRAG-START id=%{public}d dist=%{public}d', this.tag, this.pendingTl, dist);
+          hgs.LOGI(`[CLICK-PIPE] [ArkTS] ${this.tag} DRAG-START id=${this.pendingTl} dist=${dist}`);
           hgs.sendPointerEvent(this.pendingTl, MouseAction.Press, this.pendingPx, this.pendingPy, mapMouseButton(1));
           hgs.sendPointerEvent(this.pendingTl, MouseAction.Move, px, py, mapMouseButton(1));
         } else if (this.isDragging) {
@@ -397,16 +393,14 @@ export struct HgsSurface {
           // 必须处理 — 合成 mouse Move 被手势守卫吞掉)
           hgs.sendPointerEvent(this.pendingTl, MouseAction.Move, px, py, 0);
           if (++this.motionLogCounter % 10 === 0) {
-            hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] %{public}s DRAG-MOVE id=%{public}d frame=%{public}d',
-              this.tag, this.pendingTl, this.motionLogCounter);
+            hgs.LOGI(`[CLICK-PIPE] [ArkTS] ${this.tag} DRAG-MOVE id=${this.pendingTl} frame=${this.motionLogCounter}`);
           }
         }
         // PENDING 且未超阈值: 等待 Up 判定长按/点击
 
       } else if (ev.type === TouchType.Up) {
         if (this.isDragging) {
-          hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] %{public}s DRAG-END id=%{public}d px=(%{public}d,%{public}d)',
-            this.tag, this.pendingTl, px, py);
+          hgs.LOGI(`[CLICK-PIPE] [ArkTS] ${this.tag} DRAG-END id=${this.pendingTl} px=(${px},${py})`);
           hgs.sendPointerEvent(this.pendingTl, MouseAction.Release, px, py, mapMouseButton(1));
           this.isDragging = false;
         } else if (this.touchPending) {
@@ -416,7 +410,7 @@ export struct HgsSurface {
             // 长按 → 右键; 打断双击序列
             const btnRight = mapMouseButton(2);
             this.lastTapTime = 0;
-            hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] %{public}s LONGPRESS->RIGHTCLICK id=%{public}d elapsed=%{public}dms', this.tag, this.pendingTl, elapsed);
+            hgs.LOGI(`[CLICK-PIPE] [ArkTS] ${this.tag} LONGPRESS->RIGHTCLICK id=${this.pendingTl} elapsed=${elapsed}ms`);
             hgs.sendPointerEvent(this.pendingTl, MouseAction.Press, this.pendingPx, this.pendingPy, btnRight);
             hgs.sendPointerEvent(this.pendingTl, MouseAction.Release, this.pendingPx, this.pendingPy, btnRight);
           } else {
@@ -430,12 +424,11 @@ export struct HgsSurface {
               && this.pendingTl === this.lastTapTl);
             if (isDoubleTap) {
               this.lastTapTime = 0;
-              hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] %{public}s DOUBLE-TAP id=%{public}d', this.tag, this.pendingTl);
+              hgs.LOGI(`[CLICK-PIPE] [ArkTS] ${this.tag} DOUBLE-TAP id=${this.pendingTl}`);
               hgs.sendPointerEvent(this.pendingTl, MouseAction.Press, this.lastTapPx, this.lastTapPy, btnLeft);
               hgs.sendPointerEvent(this.pendingTl, MouseAction.Release, this.lastTapPx, this.lastTapPy, btnLeft);
             } else {
-              hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] %{public}s TAP->LEFTCLICK id=%{public}d px=(%{public}d,%{public}d)',
-                this.tag, this.pendingTl, this.pendingPx, this.pendingPy);
+              hgs.LOGI(`[CLICK-PIPE] [ArkTS] ${this.tag} TAP->LEFTCLICK id=${this.pendingTl} px=(${this.pendingPx},${this.pendingPy})`);
               hgs.sendPointerEvent(this.pendingTl, MouseAction.Press, this.pendingPx, this.pendingPy, btnLeft);
               hgs.sendPointerEvent(this.pendingTl, MouseAction.Release, this.pendingPx, this.pendingPy, btnLeft);
               this.lastTapTime = now;
@@ -447,7 +440,7 @@ export struct HgsSurface {
         }
       }
     } catch (e) {
-      hilog.error(DOMAIN, 'CLICK-PIPE', '[ArkTS] %{public}s TOUCH handler exception: %{public}s', this.tag, JSON.stringify(e));
+      hgs.LOGE(`[CLICK-PIPE] [ArkTS] ${this.tag} TOUCH handler exception: ${JSON.stringify(e)}`);
     }
   }
 
@@ -493,8 +486,7 @@ export struct HgsSurface {
     const py = vp2px(ev.y);
     const btn = mapMouseButton(ev.button);
     if (ev.action !== MouseAction.Move) {
-      hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] %{public}s MOUSE id=%{public}d action=%{public}d px=(%{public}d,%{public}d) btn=%{public}d',
-        this.tag, id, ev.action, Math.round(px), Math.round(py), btn);
+      hgs.LOGI(`[CLICK-PIPE] [ArkTS] ${this.tag} MOUSE id=${id} action=${ev.action} px=(${Math.round(px)},${Math.round(py)}) btn=${btn}`);
     }
     let rawDx = ev.rawDeltaX ?? 0;
     let rawDy = ev.rawDeltaY ?? 0;
@@ -514,8 +506,7 @@ export struct HgsSurface {
   private onMouseDesktop(ev: MouseEvent): void {
     try {
       if (ev.action !== MouseAction.Move) {
-        hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] MOUSE-RAW a=%{public}d btn=%{public}d ts=%{public}d',
-          ev.action, ev.button, Math.round(ev.timestamp % 1000000000));
+        hgs.LOGI(`[CLICK-PIPE] [ArkTS] MOUSE-RAW a=${ev.action} btn=${ev.button} ts=${Math.round(ev.timestamp % 1000000000)}`);
       }
       if (ev.action === MouseAction.Move) {
         if (this.touchPending || this.isDragging || this.twoFingerActive) return;
@@ -527,8 +518,7 @@ export struct HgsSurface {
           if (tl <= 0) return;
         }
         if (++this.hoverLogCounter % 120 === 0) {
-          hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] %{public}s MOUSE-MOVE id=%{public}d n=%{public}d',
-            this.tag, tl, this.hoverLogCounter);
+          hgs.LOGI(`[CLICK-PIPE] [ArkTS] ${this.tag} MOUSE-MOVE id=${tl} n=${this.hoverLogCounter}`);
         }
         let rawDx = ev.rawDeltaX ?? 0;
         let rawDy = ev.rawDeltaY ?? 0;
@@ -590,7 +580,7 @@ export struct HgsSurface {
         if (isRight) this.rightBtnTl = 0; else this.midBtnTl = 0;
       }
     } catch (e) {
-      hilog.error(DOMAIN, 'CLICK-PIPE', '[ArkTS] %{public}s MOUSE handler exception: %{public}s', this.tag, JSON.stringify(e));
+      hgs.LOGE(`[CLICK-PIPE] [ArkTS] ${this.tag} MOUSE handler exception: ${JSON.stringify(e)}`);
     }
   }
 
@@ -621,12 +611,11 @@ export struct HgsSurface {
     ev.stopPropagation();
     const evdevCode = OH2EVDEV[ev.keyCode] ?? 0;
     if (evdevCode === 0) {
-      hilog.warn(DOMAIN, 'KBD-PIPE', '[ArkTS] %{public}s KEY unmapped ohosCode=%{public}d', this.tag, ev.keyCode);
+      hgs.LOGW(`[KBD-PIPE] [ArkTS] ${this.tag} KEY unmapped ohosCode=${ev.keyCode}`);
       return;
     }
     const pressed = (ev.type === KeyType.Down);
-    hilog.info(DOMAIN, 'KBD-PIPE', '[ArkTS] %{public}s KEY id=%{public}d ohos=%{public}d->evdev=%{public}d %{public}s',
-      this.tag, id, ev.keyCode, evdevCode, pressed ? 'DOWN' : 'UP');
+    hgs.LOGI(`[KBD-PIPE] [ArkTS] ${this.tag} KEY id=${id} ohos=${ev.keyCode}->evdev=${evdevCode} ${pressed ? 'DOWN' : 'UP'}`);
     // 回车补发: 软键盘/IME 场景系统吞 KeyDown 只派发 KeyUp → 无配对 down 时
     // 补发完整 down+up, 保证 Wine 触发按键
     if (this.enterSynth && evdevCode === EVDEV_KEY_ENTER) {
@@ -737,8 +726,7 @@ export struct HgsSurface {
         .onAreaChange((_o: Area, n: Area) => {
           this.surfacePxW = vp2px(n.width as number);
           this.surfacePxH = vp2px(n.height as number);
-          hilog.info(DOMAIN, this.tag, '[Ctrl] onAreaChange xc=%{public}s w=%{public}d h=%{public}d',
-            this.xcId, Math.round(this.surfacePxW), Math.round(this.surfacePxH));
+          hgs.LOGI(`[${this.tag}] [Ctrl] onAreaChange xc=${this.xcId} w=${Math.round(this.surfacePxW)} h=${Math.round(this.surfacePxH)}`);
         })
 
         // ── 触控板虚拟光标指示 (不响应触摸, 纯展示) ──

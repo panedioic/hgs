@@ -34,3 +34,9 @@ export const notifyToplevelResizeEnd: (toplevelId: number) => void;
 export const findToplevelAt: (px: number, py: number) => number;
 export const raiseToplevel: (toplevelId: number) => void;
 export const setToplevelVisible: (toplevelId: number, visible: boolean) => void;
+
+// ── logger (logger/logger.cpp): 多 sink 日志 (stderr/沙箱文件/hilog/自定义) ──
+// tag 语义由调用方拼进 msg (如 "[CLICK-PIPE] ...")
+export const LOGI: (msg: string) => void;
+export const LOGW: (msg: string) => void;
+export const LOGE: (msg: string) => void;
