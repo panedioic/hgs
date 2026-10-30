@@ -1,10 +1,4 @@
-// hgs 原生入口 — NativeXComponent 模式 (参照 blender-harmonyos):
-// XComponent(libraryname:'hgs') 触发模块 Init 时 exports 携带
-// OH_NATIVE_XCOMPONENT_OBJ, 在此注册 surface 回调; 生命周期由
-// OnSurfaceCreated/Changed/Destroyed 在原生层驱动, 不再暴露
-// create/destroy 导出。
-
-
+// hgs/src/main/cpp/napi_init.cpp - hgs 原生函数导出
 #include <ace/xcomponent/native_interface_xcomponent.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -24,21 +18,12 @@
 #include "input/game_controller_bridge.h"
 #include "input/controller/controller_napi.h"
 #include "input/text_input.h"
-
 #include "graphics/egl_surface.h"
-
 
 namespace {
 
-// ============================================================================
-// 以下为自 entry napi_init 迁入的合成器/输入/渲染器 NAPI 面 (方案 B1b):
-// startServer/stopServer、toplevel 事件与状态 TSFN、渲染器管理、输入注入、
-// IME、手柄/控制器。宿主 (entry) 的 ArkTS 侧经 libhgs.so 调用同名导出。
-// ============================================================================
-
 // -- NAPI: dumpWindowLayout -- (WMS 全窗口布局列表, 层级排序 index 0 = 最高)
-// 白屏 z 序判定: Fusion 主窗 (335 类) 与画面 popup (336 类) 的 rect 在列表中
-// 的先后; 与 ArkTS 侧 subWinId 打点对照归属。
+// 调试工具，暂不特殊处理
 static napi_value DumpWindowLayout(napi_env env, napi_callback_info info) {
     size_t argc = 1;
     napi_value args[1];
@@ -103,27 +88,29 @@ static napi_value Init(napi_env env, napi_value exports) {
         {"sendPointerEvent",        nullptr, hgs::im::SendPointerEventNAPI,         nullptr, nullptr, nullptr, napi_default, nullptr },
         {"sendKeyEvent",            nullptr, hgs::im::SendKeyEventNAPI,             nullptr, nullptr, nullptr, napi_default, nullptr },
         {"sendScrollEvent",         nullptr, hgs::im::SendScrollEventNAPI,          nullptr, nullptr, nullptr, napi_default, nullptr },
-        {"dumpWindowLayout",      nullptr, DumpWindowLayout,      nullptr, nullptr, nullptr, napi_default, nullptr },
-        {"initGameController",        nullptr, InitGameController,        nullptr, nullptr, nullptr, napi_default, nullptr },
-        {"cleanupGameController",     nullptr, CleanupGameController,     nullptr, nullptr, nullptr, napi_default, nullptr },
-        {"isGamepadConnected",        nullptr, IsGamepadConnected,        nullptr, nullptr, nullptr, napi_default, nullptr },
-        {"getGamepadCount",           nullptr, GetGamepadCount,           nullptr, nullptr, nullptr, napi_default, nullptr },
-        {"setGamepadButtonCallback",  nullptr, SetGamepadButtonCallback,  nullptr, nullptr, nullptr, napi_default, nullptr },
-        {"setGamepadAxisCallback",    nullptr, SetGamepadAxisCallback,    nullptr, nullptr, nullptr, napi_default, nullptr },
-        {"setGamepadDeviceCallback",  nullptr, SetGamepadDeviceCallback,  nullptr, nullptr, nullptr, napi_default, nullptr },
-        {"setGamepadRumbleCallback",  nullptr, SetGamepadRumbleCallback,  nullptr, nullptr, nullptr, napi_default, nullptr },
-        {"controllerSetEnabled",      nullptr, ControllerSetEnabled,      nullptr, nullptr, nullptr, napi_default, nullptr },
-        {"controllerSetButton",       nullptr, ControllerSetButton,       nullptr, nullptr, nullptr, napi_default, nullptr },
-        {"controllerSetAxis",         nullptr, ControllerSetAxis,         nullptr, nullptr, nullptr, napi_default, nullptr },
-        {"controllerSetHat",          nullptr, ControllerSetHat,          nullptr, nullptr, nullptr, napi_default, nullptr },
-        {"controllerResetSource",     nullptr, ControllerResetSource,     nullptr, nullptr, nullptr, napi_default, nullptr },
-        {"controllerGetState",        nullptr, ControllerGetState,        nullptr, nullptr, nullptr, napi_default, nullptr },
-        {"controllerGetStateText",    nullptr, ControllerGetStateText,    nullptr, nullptr, nullptr, napi_default, nullptr },
-        {"controllerStartBridge",     nullptr, ControllerStartBridge,     nullptr, nullptr, nullptr, napi_default, nullptr },
-        {"controllerStopBridge",      nullptr, ControllerStopBridge,      nullptr, nullptr, nullptr, napi_default, nullptr },
-        {"controllerGetSocketPath",   nullptr, ControllerGetSocketPath,   nullptr, nullptr, nullptr, napi_default, nullptr },
-        {"controllerSetOutputMode",   nullptr, ControllerSetOutputMode,   nullptr, nullptr, nullptr, napi_default, nullptr },
-        {"controllerGetOutputMode",   nullptr, ControllerGetOutputMode,   nullptr, nullptr, nullptr, napi_default, nullptr },
+        // Controller and GamePad 相关
+        {"initGameController",          nullptr, InitGameController,                nullptr, nullptr, nullptr, napi_default, nullptr },
+        {"cleanupGameController",       nullptr, CleanupGameController,             nullptr, nullptr, nullptr, napi_default, nullptr },
+        {"isGamepadConnected",          nullptr, IsGamepadConnected,                nullptr, nullptr, nullptr, napi_default, nullptr },
+        {"getGamepadCount",             nullptr, GetGamepadCount,                   nullptr, nullptr, nullptr, napi_default, nullptr },
+        {"setGamepadButtonCallback",    nullptr, SetGamepadButtonCallback,          nullptr, nullptr, nullptr, napi_default, nullptr },
+        {"setGamepadAxisCallback",      nullptr, SetGamepadAxisCallback,            nullptr, nullptr, nullptr, napi_default, nullptr },
+        {"setGamepadDeviceCallback",    nullptr, SetGamepadDeviceCallback,          nullptr, nullptr, nullptr, napi_default, nullptr },
+        {"setGamepadRumbleCallback",    nullptr, SetGamepadRumbleCallback,          nullptr, nullptr, nullptr, napi_default, nullptr },
+        {"controllerSetEnabled",        nullptr, ControllerSetEnabled,              nullptr, nullptr, nullptr, napi_default, nullptr },
+        {"controllerSetButton",         nullptr, ControllerSetButton,               nullptr, nullptr, nullptr, napi_default, nullptr },
+        {"controllerSetAxis",           nullptr, ControllerSetAxis,                 nullptr, nullptr, nullptr, napi_default, nullptr },
+        {"controllerSetHat",            nullptr, ControllerSetHat,                  nullptr, nullptr, nullptr, napi_default, nullptr },
+        {"controllerResetSource",       nullptr, ControllerResetSource,             nullptr, nullptr, nullptr, napi_default, nullptr },
+        {"controllerGetState",          nullptr, ControllerGetState,                nullptr, nullptr, nullptr, napi_default, nullptr },
+        {"controllerGetStateText",      nullptr, ControllerGetStateText,            nullptr, nullptr, nullptr, napi_default, nullptr },
+        {"controllerStartBridge",       nullptr, ControllerStartBridge,             nullptr, nullptr, nullptr, napi_default, nullptr },
+        {"controllerStopBridge",        nullptr, ControllerStopBridge,              nullptr, nullptr, nullptr, napi_default, nullptr },
+        {"controllerGetSocketPath",     nullptr, ControllerGetSocketPath,           nullptr, nullptr, nullptr, napi_default, nullptr },
+        {"controllerSetOutputMode",     nullptr, ControllerSetOutputMode,           nullptr, nullptr, nullptr, napi_default, nullptr },
+        {"controllerGetOutputMode",     nullptr, ControllerGetOutputMode,           nullptr, nullptr, nullptr, napi_default, nullptr },
+        // 诊断工具
+        {"dumpWindowLayout",            nullptr, DumpWindowLayout,                  nullptr, nullptr, nullptr, napi_default, nullptr },
 
     };
     napi_define_properties(env, exports, sizeof(desc) / sizeof(desc[0]), desc);
