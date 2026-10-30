@@ -36,19 +36,6 @@ namespace {
 // IME、手柄/控制器。宿主 (entry) 的 ArkTS 侧经 libhgs.so 调用同名导出。
 // ============================================================================
 
-// -- NAPI: registerHostWindow -- (ets 各 Ability 注册主窗口 id, 供
-// OH_WindowManager_LockCursor 锁定光标用 — 仅获焦窗口能锁, 逐个尝试)
-static napi_value RegisterHostWindow(napi_env env, napi_callback_info info) {
-    size_t argc = 1;
-    napi_value args[1];
-    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-    if (argc < 1) return nullptr;
-    int32_t windowId = 0;
-    napi_get_value_int32(env, args[0], &windowId);
-    PointerExtras::RegisterHostWindow(windowId);
-    return nullptr;
-}
-
 // -- NAPI: dumpWindowLayout -- (WMS 全窗口布局列表, 层级排序 index 0 = 最高)
 // 白屏 z 序判定: Fusion 主窗 (335 类) 与画面 popup (336 类) 的 rect 在列表中
 // 的先后; 与 ArkTS 侧 subWinId 打点对照归属。
@@ -86,6 +73,7 @@ static napi_value Init(napi_env env, napi_value exports) {
         {"destroyRenderer",         nullptr, hgs::surface::DestroyRendererNAPI,     nullptr, nullptr, nullptr, napi_default, nullptr },
         // 鼠标锁定函数绑定（暂时使用 ETS 实现，后续考虑更换为 Native 实现）
         {"setPointerLockCallback",  nullptr, hgs::pe::SetPointerLockCallbackNAPI,   nullptr, nullptr, nullptr, napi_default, nullptr },
+        {"registerHostWindow",      nullptr, hgs::pe::RegisterHostWindowNAPI,       nullptr, nullptr, nullptr, napi_default, nullptr },
         // IME 相关
         {"setImeCallback",          nullptr, hgs::ti::SetImeCallbackNAPI,           nullptr, nullptr, nullptr, napi_default, nullptr },
         {"sendImeCommit",           nullptr, hgs::ti::SendImeCommitNAPI,            nullptr, nullptr, nullptr, napi_default, nullptr },
@@ -115,7 +103,6 @@ static napi_value Init(napi_env env, napi_value exports) {
         {"sendPointerEvent",        nullptr, hgs::im::SendPointerEventNAPI,         nullptr, nullptr, nullptr, napi_default, nullptr },
         {"sendKeyEvent",            nullptr, hgs::im::SendKeyEventNAPI,             nullptr, nullptr, nullptr, napi_default, nullptr },
         {"sendScrollEvent",         nullptr, hgs::im::SendScrollEventNAPI,          nullptr, nullptr, nullptr, napi_default, nullptr },
-        {"registerHostWindow",    nullptr, RegisterHostWindow,    nullptr, nullptr, nullptr, napi_default, nullptr },
         {"dumpWindowLayout",      nullptr, DumpWindowLayout,      nullptr, nullptr, nullptr, napi_default, nullptr },
         {"initGameController",        nullptr, InitGameController,        nullptr, nullptr, nullptr, napi_default, nullptr },
         {"cleanupGameController",     nullptr, CleanupGameController,     nullptr, nullptr, nullptr, napi_default, nullptr },

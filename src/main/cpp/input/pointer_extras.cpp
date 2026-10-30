@@ -528,5 +528,18 @@ napi_value SetPointerLockCallbackNAPI(napi_env env, napi_callback_info info) {
     return nullptr;
 }
 
+// -- NAPI: registerHostWindow -- (ets 各 Ability 注册主窗口 id, 供
+// OH_WindowManager_LockCursor 锁定光标用 — 仅获焦窗口能锁, 逐个尝试)
+napi_value RegisterHostWindowNAPI(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    if (argc < 1) return nullptr;
+    int32_t windowId = 0;
+    napi_get_value_int32(env, args[0], &windowId);
+    PointerExtras::RegisterHostWindow(windowId);
+    return nullptr;
+}
+
 } // namespace pe
 } // namespace hgs

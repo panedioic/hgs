@@ -178,6 +178,7 @@ namespace pe {
 
 // 外部链接: napi_init.cpp desc 表跨 TU 引用, static 会 undefined reference
 napi_value SetPointerLockCallbackNAPI(napi_env env, napi_callback_info info);
+napi_value RegisterHostWindowNAPI(napi_env env, napi_callback_info info);
 
 } // namespace pe
 } // namespace hgs
