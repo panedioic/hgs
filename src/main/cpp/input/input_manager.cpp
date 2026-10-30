@@ -16,6 +16,8 @@
 #include <algorithm>
 #include <unistd.h>
 
+#include "napi/native_api.h"  // 尾部 hgs::im NAPI 导出段
+
 #undef LOG_DOMAIN
 #undef LOG_TAG
 #define LOG_DOMAIN 0x0000
@@ -816,3 +818,84 @@ void InputManager::InjectKeyboardLeave() {
 void InputManager::InjectKeyboardModifiers(uint32_t depressed, uint32_t latched, uint32_t locked, uint32_t group) {
     injector_.InjectKeyboardModifiers(depressed, latched, locked, group);
 }
+
+// ========================================================================
+//  NAPI Export
+// ========================================================================
+
+namespace hgs {
+namespace im {
+
+// -- Input forwarding NAPI (unified InputManager path) --
+napi_value SendPointerEventNAPI(napi_env env, napi_callback_info info) {
+    size_t argc = 8;
+    napi_value args[8];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    if (argc < 5) return nullptr;
+    uint32_t tl; int32_t action; double px, py; int32_t button;
+    napi_get_value_uint32(env, args[0], &tl);
+    napi_get_value_int32(env, args[1], &action);
+    napi_get_value_double(env, args[2], &px);
+    napi_get_value_double(env, args[3], &py);
+    napi_get_value_int32(env, args[4], &button);
+    // 可选: MouseEvent.rawDeltaX/Y (API15+, 仅 Move 传; 缺省 0 = 无 raw 数据,
+    // InputManager 回退绝对差分); args[7] fromMouse: onMouse 物理鼠标通道
+    // 传 true (触屏 onTouch 路径不传) — 相对模式 PRESS 是否跳过 enter 重定位
+    double rawDx = 0, rawDy = 0;
+    if (argc >= 7) {
+        napi_get_value_double(env, args[5], &rawDx);
+        napi_get_value_double(env, args[6], &rawDy);
+    }
+    bool fromMouse = false;
+    if (argc >= 8) {
+        napi_get_value_bool(env, args[7], &fromMouse);
+    }
+    // 跳过 MOVE (=3, 高频), 只记录 button/enter/leave。
+    // 曾误写 action!=1: 跳过的是 PRESS (日志只见 Release 不见 Press),
+    // 且 MOVE 全量刷屏 — ArkTS MouseAction: Press=1 Release=2 Move=3
+    // (与 input_manager.cpp ACT_* 注释一致)
+    if (action != 3) {
+        OH_LOG_INFO(LOG_APP, "[PIPE] ptr tl=%{public}u a=%{public}d btn=0x%{public}x "
+                    "px=(%{public}.0f,%{public}.0f) raw=(%{public}.1f,%{public}.1f) fromMouse=%{public}d",
+                    tl, action, button, px, py, rawDx, rawDy, fromMouse ? 1 : 0);
+    }
+    InputManager::GetInstance()->SendPointerEvent(tl, action, px, py, button, rawDx, rawDy, fromMouse);
+    return nullptr;
+}
+
+napi_value SendKeyEventNAPI(napi_env env, napi_callback_info info) {
+    size_t argc = 3;
+    napi_value args[3];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    if (argc < 3) return nullptr;
+    uint32_t tl; int32_t evdevCode; bool pressed;
+    napi_get_value_uint32(env, args[0], &tl);
+    napi_get_value_int32(env, args[1], &evdevCode);
+    napi_get_value_bool(env, args[2], &pressed);
+    OH_LOG_INFO(LOG_APP, "[PIPE] key tl=%{public}u evdev=%{public}d down=%{public}s",
+                tl, evdevCode, pressed ? "true" : "false");
+    InputManager::GetInstance()->SendKeyEvent(tl, evdevCode, pressed);
+    return nullptr;
+}
+
+napi_value SendScrollEventNAPI(napi_env env, napi_callback_info info) {
+    size_t argc = 6;
+    napi_value args[6];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    if (argc < 6) return nullptr;
+    uint32_t tl; int32_t axis; double value; int32_t scrollStep; double px; double py;
+    napi_get_value_uint32(env, args[0], &tl);
+    napi_get_value_int32(env, args[1], &axis);
+    napi_get_value_double(env, args[2], &value);
+    napi_get_value_int32(env, args[3], &scrollStep);
+    napi_get_value_double(env, args[4], &px);
+    napi_get_value_double(env, args[5], &py);
+    OH_LOG_INFO(LOG_APP, "[PIPE] scroll tl=%{public}u axis=%{public}s val=%{public}.1f step=%{public}d px=(%{public}.0f,%{public}.0f)",
+                tl, axis == 0 ? "VERT" : "HORIZ", value, scrollStep, px, py);
+    InputManager::GetInstance()->SendScrollEvent(tl, axis, value, scrollStep, px, py);
+    return nullptr;
+}
+
+} // namespace im
+} // namespace hgs
+

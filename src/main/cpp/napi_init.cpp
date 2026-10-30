@@ -92,76 +92,6 @@ static napi_value DestroyRenderer(napi_env env, napi_callback_info info) {
     return nullptr;
 }
 
-// -- Input forwarding NAPI (unified InputManager path) --
-static napi_value SendPointerEvent(napi_env env, napi_callback_info info) {
-    size_t argc = 8;
-    napi_value args[8];
-    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-    if (argc < 5) return nullptr;
-    uint32_t tl; int32_t action; double px, py; int32_t button;
-    napi_get_value_uint32(env, args[0], &tl);
-    napi_get_value_int32(env, args[1], &action);
-    napi_get_value_double(env, args[2], &px);
-    napi_get_value_double(env, args[3], &py);
-    napi_get_value_int32(env, args[4], &button);
-    // 可选: MouseEvent.rawDeltaX/Y (API15+, 仅 Move 传; 缺省 0 = 无 raw 数据,
-    // InputManager 回退绝对差分); args[7] fromMouse: onMouse 物理鼠标通道
-    // 传 true (触屏 onTouch 路径不传) — 相对模式 PRESS 是否跳过 enter 重定位
-    double rawDx = 0, rawDy = 0;
-    if (argc >= 7) {
-        napi_get_value_double(env, args[5], &rawDx);
-        napi_get_value_double(env, args[6], &rawDy);
-    }
-    bool fromMouse = false;
-    if (argc >= 8) {
-        napi_get_value_bool(env, args[7], &fromMouse);
-    }
-    // 跳过 MOVE (=3, 高频), 只记录 button/enter/leave。
-    // 曾误写 action!=1: 跳过的是 PRESS (日志只见 Release 不见 Press),
-    // 且 MOVE 全量刷屏 — ArkTS MouseAction: Press=1 Release=2 Move=3
-    // (与 input_manager.cpp ACT_* 注释一致)
-    if (action != 3) {
-        OH_LOG_INFO(LOG_APP, "[PIPE] ptr tl=%{public}u a=%{public}d btn=0x%{public}x "
-                    "px=(%{public}.0f,%{public}.0f) raw=(%{public}.1f,%{public}.1f) fromMouse=%{public}d",
-                    tl, action, button, px, py, rawDx, rawDy, fromMouse ? 1 : 0);
-    }
-    InputManager::GetInstance()->SendPointerEvent(tl, action, px, py, button, rawDx, rawDy, fromMouse);
-    return nullptr;
-}
-
-static napi_value SendKeyEvent(napi_env env, napi_callback_info info) {
-    size_t argc = 3;
-    napi_value args[3];
-    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-    if (argc < 3) return nullptr;
-    uint32_t tl; int32_t evdevCode; bool pressed;
-    napi_get_value_uint32(env, args[0], &tl);
-    napi_get_value_int32(env, args[1], &evdevCode);
-    napi_get_value_bool(env, args[2], &pressed);
-    OH_LOG_INFO(LOG_APP, "[PIPE] key tl=%{public}u evdev=%{public}d down=%{public}s",
-                tl, evdevCode, pressed ? "true" : "false");
-    InputManager::GetInstance()->SendKeyEvent(tl, evdevCode, pressed);
-    return nullptr;
-}
-
-static napi_value SendScrollEvent(napi_env env, napi_callback_info info) {
-    size_t argc = 6;
-    napi_value args[6];
-    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-    if (argc < 6) return nullptr;
-    uint32_t tl; int32_t axis; double value; int32_t scrollStep; double px; double py;
-    napi_get_value_uint32(env, args[0], &tl);
-    napi_get_value_int32(env, args[1], &axis);
-    napi_get_value_double(env, args[2], &value);
-    napi_get_value_int32(env, args[3], &scrollStep);
-    napi_get_value_double(env, args[4], &px);
-    napi_get_value_double(env, args[5], &py);
-    OH_LOG_INFO(LOG_APP, "[PIPE] scroll tl=%{public}u axis=%{public}s val=%{public}.1f step=%{public}d px=(%{public}.0f,%{public}.0f)",
-                tl, axis == 0 ? "VERT" : "HORIZ", value, scrollStep, px, py);
-    InputManager::GetInstance()->SendScrollEvent(tl, axis, value, scrollStep, px, py);
-    return nullptr;
-}
-
 // -- NAPI: registerHostWindow -- (ets 各 Ability 注册主窗口 id, 供
 // OH_WindowManager_LockCursor 锁定光标用 — 仅获焦窗口能锁, 逐个尝试)
 static napi_value RegisterHostWindow(napi_env env, napi_callback_info info) {
@@ -233,12 +163,13 @@ static napi_value Init(napi_env env, napi_value exports) {
         {"setDesktopMode",          nullptr, hgs::ws::SetDesktopModeNAPI,           nullptr, nullptr, nullptr, napi_default, nullptr },
         {"getDesktopRootId",        nullptr, hgs::ws::GetDesktopRootIdNAPI,         nullptr, nullptr, nullptr, napi_default, nullptr },
         {"setStateCallback",        nullptr, hgs::ws::SetStateCallbackNAPI,         nullptr, nullptr, nullptr, napi_default, nullptr },
+        // 输入相关
+        {"sendPointerEvent",        nullptr, hgs::im::SendPointerEventNAPI,         nullptr, nullptr, nullptr, napi_default, nullptr },
+        {"sendKeyEvent",            nullptr, hgs::im::SendKeyEventNAPI,             nullptr, nullptr, nullptr, napi_default, nullptr },
+        {"sendScrollEvent",         nullptr, hgs::im::SendScrollEventNAPI,          nullptr, nullptr, nullptr, napi_default, nullptr },
         {"createRenderer",        nullptr, CreateRenderer,        nullptr, nullptr, nullptr, napi_default, nullptr },
         {"resizeRenderer",        nullptr, ResizeRenderer,        nullptr, nullptr, nullptr, napi_default, nullptr },
         {"destroyRenderer",       nullptr, DestroyRenderer,       nullptr, nullptr, nullptr, napi_default, nullptr },
-        {"sendPointerEvent",      nullptr, SendPointerEvent,      nullptr, nullptr, nullptr, napi_default, nullptr },
-        {"sendKeyEvent",          nullptr, SendKeyEvent,          nullptr, nullptr, nullptr, napi_default, nullptr },
-        {"sendScrollEvent",       nullptr, SendScrollEvent,       nullptr, nullptr, nullptr, napi_default, nullptr },
         {"registerHostWindow",    nullptr, RegisterHostWindow,    nullptr, nullptr, nullptr, napi_default, nullptr },
         {"dumpWindowLayout",      nullptr, DumpWindowLayout,      nullptr, nullptr, nullptr, napi_default, nullptr },
         {"initGameController",        nullptr, InitGameController,        nullptr, nullptr, nullptr, napi_default, nullptr },

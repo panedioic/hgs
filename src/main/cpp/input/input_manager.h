@@ -3,6 +3,8 @@
 #include <wayland-server-protocol.h>
 #include <cstdint>
 
+#include "napi/native_api.h"  // 尾部 hgs::im 的 NAPI 导出声明
+
 #include "compositor/frame/geometry.h"
 #include "compositor/frame/display_policy.h"      // DisplayPolicy (6A 装配注入共享引用)
 #include "compositor/input/input_space_mapper.h"  // CoordTransform 落点 + lastGlobalPtr 显式语义 (4C1)
@@ -177,3 +179,14 @@ private:
     const DisplayPolicy* policy_ = nullptr;
     const uint32_t* desktopRootToplevelId_ = nullptr;
 };
+
+// 迁移期暂时仅对迁移函数纳入命名空间，后续再覆盖至全局
+namespace hgs {
+namespace im {
+
+napi_value SendPointerEventNAPI(napi_env env, napi_callback_info info);
+napi_value SendKeyEventNAPI(napi_env env, napi_callback_info info);
+napi_value SendScrollEventNAPI(napi_env env, napi_callback_info info);
+
+} // namespace im
+} // namespace hgs
