@@ -5,6 +5,8 @@
 #include <mutex>
 #include <vector>
 
+#include "napi/native_api.h"  // 尾部 hgs::pe 的 NAPI 导出声明
+
 /*
  * DirectInput 类老游戏 (PAL2 等) 依赖的指针扩展协议 compositor 端实现:
  *
@@ -169,3 +171,13 @@ private:
     const uint32_t* desktopRootToplevelId_ = nullptr;  // isShell 判定 (共享 root 引用)
     const bool* desktopMode_ = nullptr;   // isShell: 桌面模式 && root 未识别 = 桌面启动中
 };
+
+// 迁移期暂时仅对迁移函数纳入命名空间，后续再覆盖至全局
+namespace hgs {
+namespace pe {
+
+// 外部链接: napi_init.cpp desc 表跨 TU 引用, static 会 undefined reference
+napi_value SetPointerLockCallbackNAPI(napi_env env, napi_callback_info info);
+
+} // namespace pe
+} // namespace hgs

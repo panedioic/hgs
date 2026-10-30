@@ -36,35 +36,10 @@ namespace {
 // IME、手柄/控制器。宿主 (entry) 的 ArkTS 侧经 libhgs.so 调用同名导出。
 // ============================================================================
 
-// -- 指针锁定回调 TSFN (SetPointerLockCallback 注册, PointerExtras 触发) --
-// -- NAPI: setPointerLockCallback -- (锁定状态 → ets 隐藏/恢复系统光标)
-// gPointerLockTsfn 在主线程注册/替换、wl 线程回调读取 (20260822 review:
-// 裸指针跨线程读写 + 先 release 后 create 是 data race — 窗口重建 (launcher
-// resume 再次 init) 恰逢相对模式切换时, wl 线程可能读到已关闭/被交换的
-// 句柄 → UAF 或锁状态通知丢失)。修复: atomic 化; 替换时先原子摘除旧句柄
-// 再 release(释放后 wl 线程不可能再读到旧值); 读到 closing 中旧句柄时
-// napi_call_threadsafe_function 返回错误 — 忽略, 新句柄接管后续事件。
-static std::atomic<napi_threadsafe_function> gPointerLockTsfn{nullptr};
 struct ImeEvent {
     int active;
     int x, y, w, h;
 };
-static void CallJsPointerLock(napi_env env, napi_value cb, void*, void* data) {
-    if (env && cb) {
-        // data 打包: bit0 = locked, 高位 = 触发相对模式的约束 surface 的 toplevelId
-        // (解锁时该值为 0)。送到 ets 供"桌面 shell 自身藏光标 vs 游戏真相对模式"
-        // 的门禁区分。
-        uintptr_t packed = reinterpret_cast<uintptr_t>(data);
-        const bool locked = (packed & 1u) != 0;
-        const uint32_t toplevelId = static_cast<uint32_t>(packed >> 1);
-        napi_value undef, argLocked, argTl;
-        napi_get_undefined(env, &undef);
-        napi_get_boolean(env, locked, &argLocked);
-        napi_create_uint32(env, toplevelId, &argTl);
-        napi_value args[2] = {argLocked, argTl};
-        napi_call_function(env, undef, cb, 2, args, nullptr);
-    }
-}
 
 // -- Toplevel 回调 -> ArkTS --
 static napi_threadsafe_function gToplevelTsfn = nullptr;
@@ -508,38 +483,6 @@ static napi_value DumpWindowLayout(napi_env env, napi_callback_info info) {
     return nullptr;
 }
 
-static napi_value SetPointerLockCallback(napi_env env, napi_callback_info info) {
-    size_t argc = 1;
-    napi_value args[1];
-    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-    if (argc < 1) return nullptr;
-    if (napi_threadsafe_function old = gPointerLockTsfn.exchange(nullptr)) {
-        napi_release_threadsafe_function(old, napi_tsfn_release);
-    }
-    napi_value name;
-    napi_create_string_utf8(env, "WLPointerLock", NAPI_AUTO_LENGTH, &name);
-    napi_threadsafe_function newTsfn = nullptr;
-    if (napi_create_threadsafe_function(env, args[0], nullptr, name,
-                                         0, 1, nullptr, nullptr, nullptr, CallJsPointerLock,
-                                         &newTsfn) != napi_ok) {
-        OH_LOG_ERROR(LOG_APP, "[NAPI] setPointerLockCallback: create tsfn failed");
-        return nullptr;
-    }
-    gPointerLockTsfn.store(newTsfn);
-    PointerExtras::GetInstance()->SetPointerLockCallback([](bool locked, uint32_t toplevelId) {
-        if (napi_threadsafe_function tsfn = gPointerLockTsfn.load()) {
-            // bit0 = locked, 高位 = toplevelId (见 CallJsPointerLock 解包)
-            uintptr_t packed = static_cast<uintptr_t>(locked ? 1u : 0u) |
-                               (static_cast<uintptr_t>(toplevelId) << 1);
-            if (napi_call_threadsafe_function(tsfn, reinterpret_cast<void*>(packed),
-                    napi_tsfn_blocking) != napi_ok) {
-                // tsfn 正在关闭 (窗口重建竞态): 忽略, 新句柄接管后续事件
-            }
-        }
-    });
-    return nullptr;
-}
-
 static napi_value NotifyToplevelResize(napi_env env, napi_callback_info info) {
     size_t argc = 4;
     napi_value args[4];
@@ -674,7 +617,9 @@ EXTERN_C_START
 static napi_value Init(napi_env env, napi_value exports) {
     const napi_property_descriptor desc[] = {
         // Surface 生命周期函数绑定。（暂留，未来具体实现）
-        {"bindXComponent",          nullptr, hgs::surface::BindXComponent,        nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"bindXComponent",          nullptr, hgs::surface::BindXComponent,        nullptr, nullptr, nullptr, napi_default, nullptr },
+        // 鼠标锁定函数绑定（暂时使用 ETS 实现，后续考虑更换为 Native 实现）
+        {"setPointerLockCallback",  nullptr, hgs::pe::SetPointerLockCallbackNAPI, nullptr, nullptr, nullptr, napi_default, nullptr },
         {"startServer",           nullptr, StartServer,           nullptr, nullptr, nullptr, napi_default, nullptr },
         {"setStateCallback",      nullptr, SetStateCallback,      nullptr, nullptr, nullptr, napi_default, nullptr },
         {"stopServer",            nullptr, StopServer,            nullptr, nullptr, nullptr, napi_default, nullptr },
@@ -700,7 +645,6 @@ static napi_value Init(napi_env env, napi_value exports) {
         {"sendScrollEvent",       nullptr, SendScrollEvent,       nullptr, nullptr, nullptr, napi_default, nullptr },
         {"registerHostWindow",    nullptr, RegisterHostWindow,    nullptr, nullptr, nullptr, napi_default, nullptr },
         {"dumpWindowLayout",      nullptr, DumpWindowLayout,      nullptr, nullptr, nullptr, napi_default, nullptr },
-        {"setPointerLockCallback",nullptr, SetPointerLockCallback,nullptr, nullptr, nullptr, napi_default, nullptr },
         {"notifyToplevelResize",  nullptr, NotifyToplevelResize,  nullptr, nullptr, nullptr, napi_default, nullptr },
         {"notifyToplevelResizeEnd",nullptr,NotifyToplevelResizeEnd,nullptr,nullptr, nullptr, napi_default, nullptr },
         {"findToplevelAt",        nullptr, FindToplevelAt,        nullptr, nullptr, nullptr, napi_default, nullptr },

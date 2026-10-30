@@ -10,9 +10,11 @@
 #include "compositor/toplevel/toplevel_manager.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <thread>
 
+#include "napi/native_api.h"
 #include <window_manager/oh_window.h>
 
 #undef LOG_TAG
@@ -329,7 +331,7 @@ void PointerExtras::SendRelativeMotion(double dx, double dy) {
 }
 
 // ========================================================================
-//  Host 光标锁定 (OH_WindowManager_LockCursor + ets 隐藏光标)
+//  Lock and hide mouse (OH_WindowManager_LockCursor + ets 隐藏光标)
 // ========================================================================
 
 void PointerExtras::RegisterHostWindow(int32_t windowId) {
@@ -466,3 +468,65 @@ void PointerExtras::ReleaseLockForToplevel(uint32_t toplevelId) {
     // UnlockCursor(已销毁窗口 id 返回错误无害) + cb(false) 通知 ets 恢复光标
     ApplyHostCursorLock(false, 0);
 }
+
+// ========================================================================
+//  NAPI Export
+// ========================================================================
+
+namespace hgs {
+namespace pe {
+
+// -- 指针锁定回调 TSFN (SetPointerLockCallback 注册, PointerExtras 触发) --
+static std::atomic<napi_threadsafe_function> gPointerLockTsfn{nullptr};
+
+static void CallJsPointerLock(napi_env env, napi_value cb, void*, void* data) {
+    if (env && cb) {
+        // data 打包: bit0 = locked, 高位 = 触发相对模式的约束 surface 的 toplevelId
+        // (解锁时该值为 0)。送到 ets 供"桌面 shell 自身藏光标 vs 游戏真相对模式"
+        // 的门禁区分。
+        uintptr_t packed = reinterpret_cast<uintptr_t>(data);
+        const bool locked = (packed & 1u) != 0;
+        const uint32_t toplevelId = static_cast<uint32_t>(packed >> 1);
+        napi_value undef, argLocked, argTl;
+        napi_get_undefined(env, &undef);
+        napi_get_boolean(env, locked, &argLocked);
+        napi_create_uint32(env, toplevelId, &argTl);
+        napi_value args[2] = {argLocked, argTl};
+        napi_call_function(env, undef, cb, 2, args, nullptr);
+    }
+}
+
+napi_value SetPointerLockCallbackNAPI(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    if (argc < 1) return nullptr;
+    if (napi_threadsafe_function old = gPointerLockTsfn.exchange(nullptr)) {
+        napi_release_threadsafe_function(old, napi_tsfn_release);
+    }
+    napi_value name;
+    napi_create_string_utf8(env, "WLPointerLock", NAPI_AUTO_LENGTH, &name);
+    napi_threadsafe_function newTsfn = nullptr;
+    if (napi_create_threadsafe_function(env, args[0], nullptr, name,
+                                         0, 1, nullptr, nullptr, nullptr, CallJsPointerLock,
+                                         &newTsfn) != napi_ok) {
+        OH_LOG_ERROR(LOG_APP, "[NAPI] SetPointerLockCallbackNAPI: create tsfn failed");
+        return nullptr;
+    }
+    gPointerLockTsfn.store(newTsfn);
+    PointerExtras::GetInstance()->SetPointerLockCallback([](bool locked, uint32_t toplevelId) {
+        if (napi_threadsafe_function tsfn = gPointerLockTsfn.load()) {
+            // bit0 = locked, 高位 = toplevelId (见 CallJsPointerLock 解包)
+            uintptr_t packed = static_cast<uintptr_t>(locked ? 1u : 0u) |
+                               (static_cast<uintptr_t>(toplevelId) << 1);
+            if (napi_call_threadsafe_function(tsfn, reinterpret_cast<void*>(packed),
+                    napi_tsfn_blocking) != napi_ok) {
+                // tsfn 正在关闭 (窗口重建竞态): 忽略, 新句柄接管后续事件
+            }
+        }
+    });
+    return nullptr;
+}
+
+} // namespace pe
+} // namespace hgs
