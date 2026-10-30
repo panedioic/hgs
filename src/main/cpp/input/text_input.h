@@ -5,6 +5,8 @@
 #include <mutex>
 #include <unordered_map>
 
+#include "napi/native_api.h"  // 尾部 hgs::ti 的 NAPI 导出声明
+
 // zwp_text_input_manager_v3 / zwp_text_input_v3 compositor 侧实现。
 //
 // 职责:
@@ -80,3 +82,17 @@ private:
     ActivateCb activateCb_;
     uint32_t serial_ = 0;
 };
+
+// 迁移期暂时仅对迁移函数纳入命名空间，后续再覆盖至全局
+namespace hgs {
+namespace ti {
+
+// 外部链接: napi_init.cpp desc 表跨 TU 引用, static 会 undefined reference
+napi_value SetImeCallbackNAPI(napi_env env, napi_callback_info info);
+napi_value SendImeCommitNAPI(napi_env env, napi_callback_info info);
+napi_value SendImePreeditNAPI(napi_env env, napi_callback_info info);
+napi_value ImeBackspaceNAPI(napi_env env, napi_callback_info info);
+
+} // namespace ti
+} // namespace hgs
+

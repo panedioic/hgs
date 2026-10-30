@@ -1,7 +1,12 @@
 #include "text_input.h"
 #include "text-input-unstable-v3-server-protocol.h"
+#include "input/input_manager.h"
+
 #include <algorithm>
 #include <cstring>
+#include <string>
+
+#include "napi/native_api.h"
 
 #undef LOG_TAG
 #undef LOG_DOMAIN
@@ -275,3 +280,105 @@ void TextInput::ResetState() {
     state_.cursorX = state_.cursorY = 0;
     state_.cursorW = state_.cursorH = 0;
 }
+
+// ========================================================================
+//  NAPI Export
+// ========================================================================
+
+namespace hgs {
+namespace ti {
+
+struct ImeEvent {
+    int active;
+    int x, y, w, h;
+};
+
+// -- IME 激活回调 -> ArkTS (Wine 文本框聚焦 → 通知 ArkTS attach 弹软键盘) --
+static napi_threadsafe_function gImeTsfn = nullptr;
+
+static void CallJsIme(napi_env env, napi_value cb, void*, void* raw) {
+    auto* ev = static_cast<ImeEvent*>(raw);
+    if (env && cb && ev) {
+        napi_value undef, args[5];
+        napi_get_undefined(env, &undef);
+        napi_create_int32(env, ev->active, &args[0]);
+        napi_create_int32(env, ev->x, &args[1]);
+        napi_create_int32(env, ev->y, &args[2]);
+        napi_create_int32(env, ev->w, &args[3]);
+        napi_create_int32(env, ev->h, &args[4]);
+        napi_call_function(env, undef, cb, 5, args, nullptr);
+    }
+    delete ev;
+}
+
+// -- NAPI: setImeCallback -- (激活/失活回调注册, 同 setToplevelCallback 模式)
+napi_value SetImeCallbackNAPI(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+
+    if (gImeTsfn) {
+        napi_release_threadsafe_function(gImeTsfn, napi_tsfn_release);
+        gImeTsfn = nullptr;
+    }
+
+    napi_value name;
+    napi_create_string_utf8(env, "WL_Ime", NAPI_AUTO_LENGTH, &name);
+    napi_create_threadsafe_function(env, args[0], nullptr, name,
+                                    0, 1, nullptr, nullptr, nullptr, CallJsIme, &gImeTsfn);
+
+    TextInput::GetInstance()->SetActivateCallback([](bool active, int x, int y, int w, int h) {
+        if (gImeTsfn) {
+            auto* ev = new ImeEvent{active ? 1 : 0, x, y, w, h};
+            napi_call_threadsafe_function(gImeTsfn, ev, napi_tsfn_blocking);
+        } else {
+            OH_LOG_WARN(LOG_APP, "[WL_NAPI] ime cb dropped (tsfn not ready) active=%{public}d", active);
+        }
+    });
+
+    return nullptr;
+}
+
+// -- NAPI: sendImeCommit -- (ArkTS inputMethod insertText → Wine commit_string)
+napi_value SendImeCommitNAPI(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    size_t len = 0;
+    napi_get_value_string_utf8(env, args[0], nullptr, 0, &len);
+    std::string text(len, '\0');
+    napi_get_value_string_utf8(env, args[0], &text[0], len + 1, &len);
+    TextInput::GetInstance()->SendCommitString(text.c_str());
+    return nullptr;
+}
+
+// -- NAPI: sendImePreedit -- (ArkTS setPreviewText 预上屏 → Wine preedit_string)
+napi_value SendImePreeditNAPI(napi_env env, napi_callback_info info) {
+    size_t argc = 3;
+    napi_value args[3];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    size_t len = 0;
+    napi_get_value_string_utf8(env, args[0], nullptr, 0, &len);
+    std::string text(len, '\0');
+    napi_get_value_string_utf8(env, args[0], &text[0], len + 1, &len);
+    int32_t b = 0, e = 0;
+    napi_get_value_int32(env, args[1], &b);
+    napi_get_value_int32(env, args[2], &e);
+    TextInput::GetInstance()->SendPreeditString(text.c_str(), b, e);
+    return nullptr;
+}
+
+// -- NAPI: imeBackspace -- (软键盘退格 → Wine KEY_BACKSPACE 按键注入;
+//    Wine 的 delete_surrounding_text 是空实现, 退格走现有 key 注入链路)
+napi_value ImeBackspaceNAPI(napi_env env, napi_callback_info info) {
+    (void)env;
+    (void)info;
+    constexpr uint32_t KEY_BACKSPACE = 14;
+    auto* im = InputManager::GetInstance();
+    im->InjectKeyboardKey(KEY_BACKSPACE, WL_KEYBOARD_KEY_STATE_PRESSED);
+    im->InjectKeyboardKey(KEY_BACKSPACE, WL_KEYBOARD_KEY_STATE_RELEASED);
+    return nullptr;
+}
+
+} // namespace ti
+} // namespace hgs
