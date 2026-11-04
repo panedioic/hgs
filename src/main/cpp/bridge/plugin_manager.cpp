@@ -37,7 +37,10 @@ void PluginManager::CancelPendingToplevel(uint32_t id) {
     }
 }
 
-void PluginManager::CreateRenderer(uint32_t toplevelId, int64_t surfaceId) {
+// 返回值 (阶段 0 P0.3): true = native window 创建 + EglRenderer::Init 成功。
+// 旧调用方 (hgs::surface::CreateRendererNAPI) 忽略返回值, 行为不变;
+// HgsInstance::AttachSurface 依据返回值分配 generation。
+bool PluginManager::CreateRenderer(uint32_t toplevelId, int64_t surfaceId) {
     OH_LOG_INFO(LOG_APP, "[MW-Life] CreateRenderer tl=%{public}u count=%{public}zu→%{public}zu",
                 toplevelId, toplevelRenderers_.size(), toplevelRenderers_.size() + 1);
     OH_LOG_INFO(LOG_APP, "[MW-Create] toplevel=%{public}u surfaceId=%{public}ld existRender=%{public}zu",
@@ -56,7 +59,7 @@ void PluginManager::CreateRenderer(uint32_t toplevelId, int64_t surfaceId) {
     if (ret != 0 || !win) {
         OH_LOG_ERROR(LOG_APP, "[MW-Create] ERR toplevel #%{public}u CreateNativeWindowFromSurfaceId FAILED ret=%{public}d",
                      toplevelId, ret);
-        return;
+        return false;
     }
     OH_LOG_INFO(LOG_APP, "[MW-Create] native window created %{public}p for toplevel #%{public}u", win, toplevelId);
 
@@ -73,11 +76,12 @@ void PluginManager::CreateRenderer(uint32_t toplevelId, int64_t surfaceId) {
         toplevelRenderers_[toplevelId] = std::move(r);
         OH_LOG_INFO(LOG_APP, "[MW-Create] OK toplevel #%{public}u renderer created (total=%{public}zu)",
                     toplevelId, toplevelRenderers_.size());
-    } else {
-        OH_LOG_ERROR(LOG_APP, "[MW-Create] ERR toplevel #%{public}u EglRenderer::Init FAILED", toplevelId);
-        // 销毁刚才创建的 native window
-        OH_NativeWindow_DestroyNativeWindow(win);
+        return true;
     }
+    OH_LOG_ERROR(LOG_APP, "[MW-Create] ERR toplevel #%{public}u EglRenderer::Init FAILED", toplevelId);
+    // 销毁刚才创建的 native window
+    OH_NativeWindow_DestroyNativeWindow(win);
+    return false;
 }
 
 void PluginManager::SetRendererStretchFill(uint32_t toplevelId, bool on) {

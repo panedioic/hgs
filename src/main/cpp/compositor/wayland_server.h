@@ -67,6 +67,9 @@ public:
 
     bool Start(const std::string& socketPath);
     void Stop();
+    // 只读访问器 (阶段 0 P0.3): HgsInstance::IsRunning 经此查询事件循环
+    // 状态。running_ 为 atomic, 任意线程安全。
+    bool IsRunning() const { return running_; }
 
     // 状态回调 (首帧到达 -> 通知 ArkTS)
     void SetStateCallback(StateCb cb) { stateCb_ = std::move(cb); }

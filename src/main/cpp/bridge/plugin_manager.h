@@ -32,7 +32,10 @@ public:
     static PluginManager* GetInstance();
 
     // surfaceId 驱动的渲染器生命周期
-    void CreateRenderer(uint32_t toplevelId, int64_t surfaceId);
+    // 返回 true = native window + EglRenderer::Init 成功 (阶段 0 P0.3)。
+    // 旧调用方 (CreateRendererNAPI) 忽略返回值, 行为不变;
+    // HgsInstance::AttachSurface 依据返回值分配 generation。
+    bool CreateRenderer(uint32_t toplevelId, int64_t surfaceId);
     void ResizeRenderer(uint32_t toplevelId, int w, int h);
     // 拖拽缩放中: 目标渲染器整帧拉伸填满 (EglRenderer::SetStretchFill)
     void SetRendererStretchFill(uint32_t toplevelId, bool on);

@@ -9,6 +9,9 @@ set(NATIVERENDER_ROOT_PATH ${CMAKE_CURRENT_SOURCE_DIR})
 
 include_directories(
     ${NATIVERENDER_ROOT_PATH}
+    # 公共契约头 (api/): 裸名 include (hgs_events.h 等), 零平台依赖 —
+    # host_tests 经 HOST_TEST_INC 直连编译 (与 compositor 域同款约定)
+    ${NATIVERENDER_ROOT_PATH}/api
     ${NATIVERENDER_ROOT_PATH}/protocols
     # 合成器按域分组 (frame/toplevel/input) + 协议 C 头 (protocols/): 域内
     # 互引保持裸名 include (与 entry 同款约定)。seam/ 接缝头经根路径解析。
@@ -27,6 +30,11 @@ set(WAYLAND_LIBS_DIR ${NATIVERENDER_ROOT_PATH}/../../../libs/${OHOS_ARCH})
 add_library(hgs SHARED
     napi_init.cpp
     smoke/egl_renderer.cpp
+
+    # ── 公共 API 门面 (阶段 0) ──
+    # api/*.h 零平台依赖; 实现文件是唯一允许依赖平台/现有单例的位置
+    api/hgs_endpoint.cpp
+    api/hgs_instance.cpp
 
     # ── 合成器域 ──
     compositor/wayland_server.cpp
