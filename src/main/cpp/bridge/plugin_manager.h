@@ -36,6 +36,10 @@ public:
     // 旧调用方 (CreateRendererNAPI) 忽略返回值, 行为不变;
     // HgsInstance::AttachSurface 依据返回值分配 generation。
     bool CreateRenderer(uint32_t toplevelId, int64_t surfaceId);
+    // 原生 XComponent 路径 (阶段 1 N1): OnSurfaceCreated 已持 OHNativeWindow*
+    // (无 GetXComponentSurfaceId 可用), 直接以 window 建 renderer。
+    // window 所有权归 ArkUI — 本入口不销毁它。
+    bool CreateRendererFromWindow(uint32_t toplevelId, OHNativeWindow* window);
     void ResizeRenderer(uint32_t toplevelId, int w, int h);
     // 拖拽缩放中: 目标渲染器整帧拉伸填满 (EglRenderer::SetStretchFill)
     void SetRendererStretchFill(uint32_t toplevelId, bool on);

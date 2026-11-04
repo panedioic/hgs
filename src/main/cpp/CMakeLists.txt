@@ -74,6 +74,8 @@ add_library(hgs SHARED
     logger/logger.cpp
     input/seat.cpp
     input/input_manager.cpp
+    input/native_input.cpp       # N1: OH_NativeXComponent 输入回调
+    input/native_keymap.cpp      # N1: OHOS KeyCode → evdev (KeyMap.ets 移植)
     input/pointer_extras.cpp
     input/text_input.cpp
     input/game_controller_bridge.cpp

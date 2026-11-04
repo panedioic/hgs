@@ -47,14 +47,6 @@ bool PluginManager::CreateRenderer(uint32_t toplevelId, int64_t surfaceId) {
     OH_LOG_INFO(LOG_APP, "[MW-Create] toplevel=%{public}u surfaceId=%{public}ld existRender=%{public}zu",
                 toplevelId, surfaceId, toplevelRenderers_.size());
 
-    // 防御: 如果已有旧 renderer, 先 shutdown
-    auto old = toplevelRenderers_.find(toplevelId);
-    if (old != toplevelRenderers_.end()) {
-        OH_LOG_WARN(LOG_APP, "[MW-Create] WARN toplevel #%{public}u already has renderer, shutting down old", toplevelId);
-        old->second->Shutdown();
-        toplevelRenderers_.erase(old);
-    }
-
     OHNativeWindow* win = nullptr;
     int ret = OH_NativeWindow_CreateNativeWindowFromSurfaceId((uint64_t)surfaceId, &win);
     if (ret != 0 || !win) {
@@ -63,6 +55,29 @@ bool PluginManager::CreateRenderer(uint32_t toplevelId, int64_t surfaceId) {
         return false;
     }
     OH_LOG_INFO(LOG_APP, "[MW-Create] native window created %{public}p for toplevel #%{public}u", win, toplevelId);
+    if (!CreateRendererFromWindow(toplevelId, win)) {
+        // 销毁刚才创建的 native window
+        OH_NativeWindow_DestroyNativeWindow(win);
+        return false;
+    }
+    return true;
+}
+
+// 原生 XComponent 路径 (N1): OnSurfaceCreated 已持 OHNativeWindow*, 不经
+// surfaceId。window 所有权仍归 ArkUI (只在 Init 失败时由调用方销毁由本函数
+// 创建的那一个 — 本入口不销毁)。
+bool PluginManager::CreateRendererFromWindow(uint32_t toplevelId, OHNativeWindow* win) {
+    if (win == nullptr) {
+        OH_LOG_ERROR(LOG_APP, "[MW-Create] ERR toplevel #%{public}u null native window", toplevelId);
+        return false;
+    }
+    // 防御: 如果已有旧 renderer, 先 shutdown
+    auto old = toplevelRenderers_.find(toplevelId);
+    if (old != toplevelRenderers_.end()) {
+        OH_LOG_WARN(LOG_APP, "[MW-Create] WARN toplevel #%{public}u already has renderer, shutting down old", toplevelId);
+        old->second->Shutdown();
+        toplevelRenderers_.erase(old);
+    }
 
     // 构造注入 frame compositor (重构第 6A 步): 渲染器取帧/ZC 状态机经
     // DesktopCompositor 直连 — 替代旧 WaylandServer 门面 26 处转发
@@ -80,8 +95,6 @@ bool PluginManager::CreateRenderer(uint32_t toplevelId, int64_t surfaceId) {
         return true;
     }
     OH_LOG_ERROR(LOG_APP, "[MW-Create] ERR toplevel #%{public}u EglRenderer::Init FAILED", toplevelId);
-    // 销毁刚才创建的 native window
-    OH_NativeWindow_DestroyNativeWindow(win);
     return false;
 }
 

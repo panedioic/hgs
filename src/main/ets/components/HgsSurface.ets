@@ -48,14 +48,14 @@ export struct HgsSurface {
   @Prop keyboardTarget: number = 0;
   // 日志前缀
   @Prop tag: string = 'HgsSurface';
-  // ── 原生通道占位开关 (计划: surface 生命周期与输入全部改为纯 C++ 实现,
-  //    即 XComponent libraryname 触发 NativeXComponent 回调的 blender 模式;
-  //    目前两者均为占位, 默认走 ArkTS controller + ArkUI 事件通道) ──
-  // true: surface 生命周期由 native 回调驱动 (libraryname 注册通道), 组件
-  //       内建 controller 不再转发生命周期
+  // ── 原生通道开关 (阶段 1 N1) ──
+  // inputBackend: 0=Auto 1=ArkTS 2=Native (与 HgsInputBackend 一致)。
+  // 2 = surface 生命周期 + 输入全部由 C++ OH_NativeXComponent 回调驱动
+  // (Blender Index.ets 同款: 不挂 onTouch/onMouse/onKeyEvent);
+  // 1 = 现有 ArkTS controller + ArkUI 事件通道。
+  @Prop inputBackend: number = 0;
+  // 旧开关保留一个版本作兼容别名 (等价 inputBackend=2), 之后删除
   @Prop useNativeSurfaceCallback: boolean = false;
-  // true: 输入事件由 native 侧注册的回调处理 (指针/键盘/滚轮直接进 C++),
-  //       ArkUI 的 onTouch/onMouse/onKeyEvent 转发关闭
   @Prop useNativeInputCallback: boolean = false;
 
   // ── surface 生命周期回调 (宿主注入; 组件内建的 controller 只负责把
@@ -695,12 +695,16 @@ export struct HgsSurface {
   // ── XComponent Arkts 实现 ────────────────────────────────────────────────────
   build() {
     Stack() {
-      if (this.useNativeSurfaceCallback && this.useNativeInputCallback) {
-        // 原生通道 (占位, 暂时空实现):
-        // surface 生命周期与输入均计划改为纯 C++ 实现 — XComponent 用
-        // libraryname 触发 NativeXComponent 回调 (napi_init 的
-        // OnSurfaceCreated/Changed/Destroyed 与输入注册), 本组件不再挂
-        // controller 与 ArkUI 事件转发。落位前此分支不承载任何窗口。
+      if (this.inputBackend === 2 ||
+          (this.useNativeSurfaceCallback && this.useNativeInputCallback)) {
+        // 原生通道 (阶段 1 N1):
+        // surface 生命周期与输入全部由 C++ OH_NativeXComponent 回调驱动 —
+        // XComponent 用 libraryname 触发 napi_init 的 Init (注册 surface
+        // 回调), onLoad 里 bindXComponent(event, toplevelId) 补挂输入绑定
+        // 与原生 renderer。不挂 controller、不挂任何 onTouch/onMouse/
+        // onKeyEvent (Blender Index.ets 同款)。
+        // 生效前提: 宿主已 setInputBackend(2) 或 startServer config
+        // inputBackend=Native — 否则 native_input 回调静默 (避免与 ArkUI 双发)。
         XComponent({
           id: this.xcId,
           type: XComponentType.SURFACE,
@@ -708,6 +712,18 @@ export struct HgsSurface {
         })
           .width('100%')
           .height('100%')
+          .focusable(true)
+          .focusOnTouch(true)
+          .defaultFocus(true)
+          .onLoad((event?: object) => {
+            if (event) {
+              const id = this.resolveId ? this.resolveId() : this.toplevelId;
+              try {
+                hgs.bindXComponent(event, id);
+              } catch (_) {
+              }
+            }
+          })
       } else {
         XComponent({
           id: this.xcId,

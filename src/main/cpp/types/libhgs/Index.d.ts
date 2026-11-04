@@ -49,7 +49,9 @@ export interface HgsStartConfig {
 // surface 生命周期由 NativeXComponent 回调在原生层驱动 (XComponent
 // libraryname:'hgs' → OH_NATIVE_XCOMPONENT_OBJ); 非 Init 触发的 XComponent
 // (同进程第二个窗口) 经 bindXComponent 补挂回调。
-export const bindXComponent: (xcomp: object) => void;
+// N1 起可选第二参数 toplevelId: 绑定原生输入 + 原生 renderer
+// (backend=Native 时生效; 缺省 0 = 仅注册 surface 回调)。
+export const bindXComponent: (xcomp: object, toplevelId?: number) => void;
 
 // attachSurface 返回 generation (0 = 失败) — 后续 resize/detach 回传以
 // 防旧窗口事件误杀新 renderer; 传 0 = 通配 (兼容旧调用)。
