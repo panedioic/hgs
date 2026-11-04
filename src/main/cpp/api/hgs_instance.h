@@ -57,8 +57,8 @@ public:
     std::vector<std::string> ClientEnvironment() const;  // XDG_RUNTIME_DIR/WAYLAND_DISPLAY
 
     // 宿主回调 (主线程, Start 前后均可; host 须活到 Stop 之后, 不接管所有权)。
-    // 注意: 安装的是内部适配 sink, 与 NAPI setToplevelCallback/
-    // setStateCallback 通道互斥 (bus 单 sink, 后注册者覆盖前者并打 WARN)。
+    // 阶段 1 起 bus 单 sink 由 Start 唯一安装, 本入口是宿主接事件的标准通道
+    // (NAPI 层经 NapiHostAdapter 注册; 后注册者覆盖前者)。
     void SetHost(IHgsHost* host);
 
     // -- 会话配置 (主线程) --

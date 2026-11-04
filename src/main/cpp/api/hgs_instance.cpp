@@ -77,22 +77,14 @@ bool HgsInstance::Start(const HgsConfig& config) {
 
     WaylandServer* ws = WaylandServer::GetInstance();
     // 无条件安装适配 sink (phase0 §4.7): lambda 内实时读 host_, 允许
-    // SetHost 在 Start 前后调用。注意 bus 是单 sink — 本安装会覆盖 NAPI
-    // setToplevelCallback/setStateCallback 的注册 (两通道互斥, 头文件已注明)。
+    // SetHost 在 Start 前后调用。注意 bus 是单 sink — 本安装是 bus 的唯一
+    // 装配点 (阶段 1 P1.2 起 sink 类型化, NAPI 经 IHgsHost 消费)。
     ws->SetStateCallback([impl](const char* state) {
         if (IHgsHost* host = impl->HostSnapshot()) {
             host->OnStateChanged(std::string_view(state != nullptr ? state : ""));
         }
     });
-    ws->SetToplevelCallback([impl](uint32_t id, const char* name, const char* json) {
-        const ToplevelEventType type = ToplevelEventTypeFromName(name);
-        if (type == ToplevelEventType::Unknown) {
-            // 现有 21 种事件都能命中映射; 走到这里只可能是未来新增事件
-            // 尚未同步 api/hgs_events.h — 丢弃并告警 (phase0 §4.7)
-            LOGW("[HGS-API] unknown toplevel event '%s' dropped (id=%u)",
-                 name != nullptr ? name : "(null)", id);
-            return;
-        }
+    ws->SetToplevelCallback([impl](uint32_t id, ToplevelEventType type, const char* json) {
         if (IHgsHost* host = impl->HostSnapshot()) {
             ToplevelEvent evt;
             evt.id = id;

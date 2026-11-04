@@ -40,11 +40,11 @@ public:
     using InputTarget = ::InputTarget;
 
     using StateCb = std::function<void(const char*)>;
-    // toplevel 回调: (toplevelId, eventName, jsonData)
-    // events: "created", "destroyed", "title", "configure"
-    // (消费端子集见 napi_init.cpp SetToplevelCallback; 事件名/JSON 构造收口
-    // 于 ToplevelEventBus — 重构第 5D 步, 本签名未变)
-    using ToplevelCb = std::function<void(uint32_t, const char*, const char*)>;
+    // toplevel 回调 (阶段 1 P1.2 起 sink 签名类型化): (toplevelId,
+    // ToplevelEventType, jsonData) — 装配点唯一 (HgsInstance::Start);
+    // 字符串契约 (ArkTS 消费逐字) 由 NapiHostAdapter 经 ToplevelEventName
+    // 在适配层回转, JS 侧零改动。
+    using ToplevelCb = std::function<void(uint32_t, ToplevelEventType, const char*)>;
 
     static WaylandServer* GetInstance();
 

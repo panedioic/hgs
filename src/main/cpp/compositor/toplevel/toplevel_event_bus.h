@@ -55,11 +55,12 @@ using hgs::ToplevelEventTypeFromName;
 using hgs::kAllToplevelEvents;
 using hgs::kToplevelEventCount;
 
-// 事件接收方 (订阅侧): 签名保持旧 ToplevelCb (id, eventName, jsonData) —
-// napi_init.cpp 的 SetToplevelCallback 装配点零改动。
+// 事件接收方 (订阅侧): 阶段 1 P1.2 起 sink 签名类型化 (id, ToplevelEventType,
+// jsonData) — 装配点唯一 (HgsInstance::Start 注入); NAPI 层经 NapiHostAdapter
+// (IHgsHost) 消费, 字符串契约由 ToplevelEventName 在适配层回转 (JS 逐字不变)。
 class ToplevelEventBus {
 public:
-    using EventSink = std::function<void(uint32_t, const char*, const char*)>;
+    using EventSink = std::function<void(uint32_t, ToplevelEventType, const char*)>;
 
     // 订阅注入 (wl 线程装配, 一次性; 无锁 — 与旧 toplevelCb_ 同语义)
     void SetEventSink(EventSink sink) { sink_ = std::move(sink); }

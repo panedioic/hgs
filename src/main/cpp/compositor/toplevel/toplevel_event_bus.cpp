@@ -15,8 +15,10 @@
 //      → [MW] suppress 日志 (文本/条件/短路顺序逐字);
 //   ② [MW] FireToplevel id=... event=... data=... 日志 — eventName 经
 //      ToplevelEventName 映射为旧字符串, id/event/data 占位符逐字;
-//   ③ sink 派发 — EventSink 即旧 toplevelCb_ (napi_init SetToplevelCallback
-//      注入的 lambda, 签名 (id, eventName, jsonData) 未变);
+//   ③ sink 派发 — EventSink 即旧 toplevelCb_ (阶段 1 P1.2 起签名类型化:
+//      (id, ToplevelEventType, jsonData), 装配点 = HgsInstance::Start 唯一
+//      注入; NAPI 层经 NapiHostAdapter/IHgsHost 消费, 字符串契约由
+//      ToplevelEventName 在适配层回转);
 //   ④ desktop_root 会话侧旁路 (MarkDesktopShellProcesses + evt:desktop-ready
 //      补票) 不在本类 — 移归 WaylandServer::PostToplevelEvent (会话层编排,
 //      wayland_server.cpp), 使本模块零 napi/wine_process 依赖 (PLAN §2.2)。
@@ -43,6 +45,6 @@ void ToplevelEventBus::Post(uint32_t id, ToplevelEventType evt,
     // ② 派发日志 (原 FireToplevelEvent 的直接日志, 文本/占位符逐字)
     OH_LOG_INFO(LOG_APP, "[MW] FireToplevel id=%{public}u event=%{public}s data=%{public}s",
                 id, name, json.c_str());
-    // ③ 主事件通道 (ArkTS toplevel 回调; 装配点 napi_init SetToplevelCallback)
-    if (sink_) sink_(id, name, json.c_str());
+    // ③ 主事件通道 (typed sink; 装配点 = HgsInstance::Start 唯一注入)
+    if (sink_) sink_(id, evt, json.c_str());
 }
