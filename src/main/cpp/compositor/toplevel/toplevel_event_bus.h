@@ -36,68 +36,24 @@
 // 实现的无锁语义等价 (sink_ 在 wl 线程读, 装配一次性注入)。
 // ============================================================================
 
-// toplevel 事件 (PLAN §2.3 清单; 命名与旧字符串一一对应, 每个事件
-// 的 JSON 模板见对应 Json* 函数)。ArkTS 侧按 ToplevelEventName 字符串
-// 消费 — 事件名逐字不变 (红线)。
-enum class ToplevelEventType : uint32_t {
-    // 生命周期
-    Created,       // "created"        PC 首帧 ({\"w\":\"h\"}) / 桌面 get_toplevel ({\"w\":640,\"h\":480})
-    Destroyed,     // "destroyed"
-    // popup (PC 模式菜单)
-    PopupHide,     // "popup_hide"
-    PopupMove,     // "popup_move"
-    PopupShow,     // "popup_show"
-    PopupResize,   // "popup_resize"
-    // ARGB 窗口格式
-    Argb,          // "argb"           shm format 切换 (首帧必发)
-    // 尺寸/格式
-    Resize,        // "resize"
-    Surface,       // "surface"        renderer surface 物理像素尺寸
-    Title,         // "title"
-    Limits,        // "limits"         min/max size
-    // 窗口状态 (xdg)
-    Maximized,     // "maximized"
-    Unmaximized,   // "unmaximized"
-    Fullscreen,    // "fullscreen"
-    Unfullscreen,  // "unfullscreen"
-    Minimized,     // "minimized"
-    Restored,      // "restored"       最小化还原 (Wine 恢复帧 / 主动显示窗口)
-    // 交互式移动
-    MoveStart,     // "move_start"     xdg_toplevel.move grab 开始
-    MoveEnd,       // "move_end"       grab 结束 (或 grab 窗口销毁复位)
-    // WineHua modal 关系 (winehua_toplevel.set_modal 上报)
-    Modal,         // "modal"          1=置为模态 (modal/owner 报关系), 0=解除
-    // 会话
-    DesktopRoot,   // "desktop_root"   桌面 root 出现 (识别/PromotePending 两路径)
-};
+// ----------------------------------------------------------------------------
+// 事件枚举已迁至公共契约 api/hgs_events.h (阶段 0 P0.1, 行为平价):
+// enum 数值显式化 (NAPI setToplevelEventCallback 数值契约) + Unknown=0 哨兵
+// + ToplevelEventTypeFromName 反查 + kAllToplevelEvents 遍历表。
+// 本头保留 using 别名 — 现有调用点 (wl_core/xdg_shell/wayland_server/
+// winehua_toplevel/bus 自身) 与 host_tests 零改动; 阶段 1 NAPI 收口后
+// 调用方逐步改用 hgs:: 限定名, 别名随弃用流程删除。
+// 红线不变: ToplevelEventName 字符串与 ArkTS 消费逐字 (映射表已迁 api 头,
+// host_tests/toplevel_event_test.cpp 黄金值 + hgs_event_map_test.cpp
+// 双向映射双重固化)。
+// ----------------------------------------------------------------------------
+#include "hgs_events.h"
 
-// 事件名 → 字符串 (与 ArkTS 消费的原始字符串逐字; 日志与 sink 均用此映射)
-inline const char* ToplevelEventName(ToplevelEventType evt) {
-    switch (evt) {
-        case ToplevelEventType::Created:       return "created";
-        case ToplevelEventType::Destroyed:     return "destroyed";
-        case ToplevelEventType::PopupHide:     return "popup_hide";
-        case ToplevelEventType::PopupMove:     return "popup_move";
-        case ToplevelEventType::PopupShow:     return "popup_show";
-        case ToplevelEventType::PopupResize:   return "popup_resize";
-        case ToplevelEventType::Argb:          return "argb";
-        case ToplevelEventType::Resize:        return "resize";
-        case ToplevelEventType::Surface:       return "surface";
-        case ToplevelEventType::Title:         return "title";
-        case ToplevelEventType::Limits:        return "limits";
-        case ToplevelEventType::Maximized:     return "maximized";
-        case ToplevelEventType::Unmaximized:   return "unmaximized";
-        case ToplevelEventType::Fullscreen:    return "fullscreen";
-        case ToplevelEventType::Unfullscreen:  return "unfullscreen";
-        case ToplevelEventType::Minimized:     return "minimized";
-        case ToplevelEventType::Restored:      return "restored";
-        case ToplevelEventType::MoveStart:     return "move_start";
-        case ToplevelEventType::MoveEnd:       return "move_end";
-        case ToplevelEventType::Modal:         return "modal";
-        case ToplevelEventType::DesktopRoot:   return "desktop_root";
-    }
-    return "unknown";  // 防御: 枚举越界永不发生 (仅编译器告警消噪)
-}
+using hgs::ToplevelEventType;
+using hgs::ToplevelEventName;
+using hgs::ToplevelEventTypeFromName;
+using hgs::kAllToplevelEvents;
+using hgs::kToplevelEventCount;
 
 // 事件接收方 (订阅侧): 签名保持旧 ToplevelCb (id, eventName, jsonData) —
 // napi_init.cpp 的 SetToplevelCallback 装配点零改动。
