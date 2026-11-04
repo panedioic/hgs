@@ -11,12 +11,14 @@
 //   1. module.json5 注册 HgsAppWindowAbility 子类 (launchType: multiton)
 //   2. main_pages.json 注册 pages/HgsWindowPage 包装页
 //   3. EntryAbility.onCreate: HgsWindowHostService.init(this.context, {...})
-//   4. startServer config: inputBackend=Native
+//   4. EntryAbility.onCreate: HgsWindowHostService.start({ socketPath, ... })
+//      — 封装 hgs.startServer, 默认 inputBackend=Native / PerToplevel /
+//      dataDevice=true (可用 options 覆盖)
 
 import { window } from '@kit.ArkUI';
 import { common, Want } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
-import hgs from 'libhgs.so';
+import hgs, { HgsStartConfig } from 'libhgs.so';
 
 const TAG = 'HGS_WinHost';
 
@@ -43,6 +45,20 @@ export interface HgsWindowHostOptions {
   abilityName?: string;   // 默认 'HgsAppWindowAbility'
   pageUrl?: string;       // 默认 'pages/HgsWindowPage' (宿主 main_pages.json 注册)
   windowScale?: number;   // 逻辑尺寸 → OHOS 窗口尺寸; 默认 1, BetterSH 可设 2
+}
+
+// start() 的封装参数: 只暴露窗口 host 场景需要的字段, 其余走 startServer
+// 配置对象。默认 Native 输入 + PerToplevel + dataDevice (BetterSH/HarmonyBox
+// 的最小接入形态); WineHua 等宿主可显式覆盖。
+export interface HgsWindowHostStartOptions {
+  socketPath: string;
+  outputWidth?: number;        // >0 才下发 (0 = 不修改)
+  outputHeight?: number;
+  inputBackend?: number;       // InputBackend; 默认 2 (Native)
+  composition?: number;        // CompositionMode; 默认 1 (PerToplevel)
+  dataDevice?: boolean;        // 默认 true
+  winehuaToplevel?: boolean;   // 默认 false
+  setProcessEnvironment?: boolean;  // 默认 false (宿主用 ClientEnvironment 传子进程)
 }
 
 interface WindowSpecLike {
@@ -101,6 +117,16 @@ export class HgsWindowHostService {
     HgsWindowHostService.getInstance().init(ctx, options);
   }
 
+  /**
+   * 启动内嵌 Wayland server 的封装 (须先 init)。
+   * 默认: inputBackend=Native / composition=PerToplevel / dataDevice=true /
+   * setProcessEnvironment=false — 即窗口 host 的最小可用配置;
+   * 传入 string 时等价于只给 socketPath (其余用默认)。
+   */
+  static start(options: string | HgsWindowHostStartOptions): boolean {
+    return HgsWindowHostService.getInstance().start(options);
+  }
+
   static shutdown(): void {
     HgsWindowHostService.getInstance().windows.clear();
   }
@@ -116,6 +142,44 @@ export class HgsWindowHostService {
       this.onEvent(event as WindowEventLike);
     });
     hgs.LOGI(`[${TAG}] init: ability=${this.abilityName()} page=${this.pageUrl()} scale=${this.scale().toFixed(2)}`);
+  }
+
+  /**
+   * 启动 Wayland server (封装 hgs.startServer)。
+   * 须先 init: 窗口事件要落到 UIAbilityContext 才能 startAbility; 未 init
+   * 直接失败, 避免 server 起来但没有窗口承载。
+   */
+  start(options: string | HgsWindowHostStartOptions): boolean {
+    if (!this.ctx) {
+      hgs.LOGE(`[${TAG}] start before init — 先调用 HgsWindowHostService.init(ctx)`);
+      return false;
+    }
+    const opts: HgsWindowHostStartOptions =
+      typeof options === 'string' ? { socketPath: options } : options;
+
+    const config: HgsStartConfig = {
+      socketPath: opts.socketPath,
+      composition: opts.composition ?? 1,    // PerToplevel
+      inputBackend: opts.inputBackend ?? 2,  // Native
+      features: {
+        dataDevice: opts.dataDevice ?? true,
+        winehuaToplevel: opts.winehuaToplevel ?? false,
+      },
+      setProcessEnvironment: opts.setProcessEnvironment ?? false,
+    };
+    const w = opts.outputWidth ?? 0;
+    const h = opts.outputHeight ?? 0;
+    if (w > 0 && h > 0) {
+      config.output = { width: w, height: h };
+    }
+
+    const ok = hgs.startServer(config);
+    if (ok) {
+      hgs.LOGI(`[${TAG}] startServer OK socket=${opts.socketPath} backend=${config.inputBackend} composition=${config.composition}`);
+    } else {
+      hgs.LOGE(`[${TAG}] startServer FAILED socket=${opts.socketPath}`);
+    }
+    return ok;
   }
 
   abilityName(): string {
