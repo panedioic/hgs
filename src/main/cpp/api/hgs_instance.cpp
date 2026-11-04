@@ -34,7 +34,7 @@ struct HgsInstance::Impl {
     std::unordered_map<ToplevelId, std::pair<SurfaceToken, SurfaceGeneration>> surfaces;
     std::string lastError;                    // 失败写入, 成功不清空 (契约)
     std::string socketPath;                   // 最近一次 Start 的路径
-    HgsWindowManager windowManager;           // 阶段 2 W1: 独立 core (事件接线 W2)
+    HgsWindowManager windowManager;           // 阶段 2: 窗口管理器 core
 
     void SetError(const char* msg) {
         {
@@ -47,6 +47,93 @@ struct HgsInstance::Impl {
     IHgsHost* HostSnapshot() {
         std::lock_guard<std::mutex> lk(mutex);
         return host;
+    }
+
+    // -- 阶段 2 W2a: Wayland 事件 → 窗口管理器 (wl 线程) --
+    // 关键约束: PostToplevelEvent 的调用点可能已持 toplevelMgr_ 锁
+    // (wl_core.cpp TryAutoRestoreLocked 分支注释明确 "PostToplevelEvent 不碰
+    // 该锁") — 本适配层因此**不得**再取 tmgr 锁, 只读 SurfaceData (wl 线程
+    // 独占, 无锁) 的 committed 快照。几何/状态权威仍是 ToplevelManager,
+    // 由后续事件增量更新; 不解析 JSON。
+    SurfaceData* FindSurfaceData(ToplevelId id) {
+        ToplevelManager& tmgr = WaylandServer::GetInstance()->GetToplevelManager();
+        wl_resource* surf = tmgr.GetSurfaceForToplevel(id);  // 独立 mutex
+        if (surf == nullptr) return nullptr;
+        return static_cast<SurfaceData*>(wl_resource_get_user_data(surf));
+    }
+
+    WindowSpec BuildWindowSpec(ToplevelId id) {
+        WindowSpec spec;
+        spec.id = id;
+        SurfaceData* sd = FindSurfaceData(id);
+        if (sd == nullptr) return spec;
+        spec.clientPid = sd->clientPid;
+        spec.title = sd->title;
+        spec.appId = sd->appId;
+        spec.minWidth = sd->hasSizeLimits ? sd->minWidth : 0;
+        spec.minHeight = sd->hasSizeLimits ? sd->minHeight : 0;
+        spec.maxWidth = sd->hasSizeLimits ? sd->maxWidth : 0;
+        spec.maxHeight = sd->hasSizeLimits ? sd->maxHeight : 0;
+        spec.geometry.x = sd->committed.screenX;
+        spec.geometry.y = sd->committed.screenY;
+        spec.geometry.width = sd->w;
+        spec.geometry.height = sd->h;
+        return spec;
+    }
+
+    WindowGeometry ReadGeometry(ToplevelId id) {
+        WindowGeometry g;
+        SurfaceData* sd = FindSurfaceData(id);
+        if (sd == nullptr) return g;
+        g.x = sd->committed.screenX;
+        g.y = sd->committed.screenY;
+        g.width = sd->w;
+        g.height = sd->h;
+        return g;
+    }
+
+    std::string ReadTitle(ToplevelId id) {
+        SurfaceData* sd = FindSurfaceData(id);
+        return sd != nullptr ? sd->title : std::string();
+    }
+
+    void HandleWindowEvent(ToplevelId id, ToplevelEventType type) {
+        switch (type) {
+            case ToplevelEventType::Created:
+                windowManager.OnWindowCreated(BuildWindowSpec(id));
+                break;
+            case ToplevelEventType::Destroyed:
+                windowManager.OnWindowDestroyed(id);
+                break;
+            case ToplevelEventType::Title:
+                windowManager.OnTitleChanged(id, ReadTitle(id));
+                break;
+            case ToplevelEventType::Resize:
+                windowManager.OnClientGeometryChanged(id, ReadGeometry(id));
+                break;
+            case ToplevelEventType::Minimized:
+                windowManager.OnClientStateChanged(id, WindowState::Minimized);
+                break;
+            case ToplevelEventType::Maximized:
+                windowManager.OnClientStateChanged(id, WindowState::Maximized);
+                break;
+            case ToplevelEventType::Fullscreen:
+                windowManager.OnClientStateChanged(id, WindowState::Fullscreen);
+                break;
+            case ToplevelEventType::Restored:
+            case ToplevelEventType::Unmaximized:
+            case ToplevelEventType::Unfullscreen:
+                windowManager.OnClientStateChanged(id, WindowState::Normal);
+                break;
+            case ToplevelEventType::MoveStart:
+                windowManager.RequestMove(id);
+                break;
+            // Surface (物理 surface 尺寸) 不是客户端内容尺寸; MoveEnd/Popup*/
+            // Modal/DesktopRoot/Argb/Limits 等 W2a 暂不产生窗口事件 — 避免
+            // 在可能持锁的事件回调里做额外查询 (popup/modal 由后续 W2b 处理)。
+            default:
+                break;
+        }
     }
 };
 
@@ -86,6 +173,8 @@ bool HgsInstance::Start(const HgsConfig& config) {
         }
     });
     ws->SetToplevelCallback([impl](uint32_t id, ToplevelEventType type, const char* json) {
+        // 阶段 2 W2a: 先喂窗口管理器 (读 ToplevelManager 权威状态, 不解析 JSON)
+        impl->HandleWindowEvent(id, type);
         if (IHgsHost* host = impl->HostSnapshot()) {
             ToplevelEvent evt;
             evt.id = id;

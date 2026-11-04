@@ -43,6 +43,7 @@ enum class WindowEventType : uint32_t {
     PopupMoved = 12,
     PopupResized = 13,
     PopupHidden = 14,
+    RaiseRequested = 15,   // 逻辑置顶 (事件驱动 host 据此把 OHOS 窗口带到前台)
 };
 
 struct HGS_API WindowGeometry {

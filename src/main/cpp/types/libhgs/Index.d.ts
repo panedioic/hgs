@@ -113,6 +113,60 @@ export const sendPointerEvent: (toplevelId: number, action: number, px: number, 
 export const sendKeyEvent: (toplevelId: number, evdevCode: number, pressed: boolean) => void;
 export const sendScrollEvent: (toplevelId: number, axis: number, value: number, scrollStep: number, px: number, py: number) => void;
 
+// ── 窗口管理器 (阶段 2 W2a, Stable) ──────────────────────────────────────
+export enum HgsWindowState { Normal = 0, Minimized = 1, Maximized = 2, Fullscreen = 3 }
+
+export enum HgsWindowEventType {
+  Unknown = 0,
+  Created = 1, Destroyed = 2, TitleChanged = 3,
+  GeometryChanged = 4, StateChanged = 5, FocusChanged = 6,
+  VisibleChanged = 7, CloseRequested = 8,
+  MoveRequested = 9, ResizeRequested = 10,
+  PopupShown = 11, PopupMoved = 12, PopupResized = 13, PopupHidden = 14,
+  RaiseRequested = 15,
+}
+
+export interface HgsWindowSpec {
+  id: number;
+  pid: number;
+  appId: string;
+  title: string;
+  // 客户端内容几何 (不是 OHOS 窗口尺寸; host 按 windowScale 换算)
+  x: number; y: number; width: number; height: number;
+  minWidth: number; minHeight: number;
+  maxWidth: number; maxHeight: number;
+  parentId: number;
+  modal: boolean;
+  decorated: boolean;
+  visible: boolean;
+  state: HgsWindowState;
+}
+
+export interface HgsWindowGeometry { x: number; y: number; width: number; height: number; }
+
+export interface HgsWindowEvent {
+  type: HgsWindowEventType;
+  id: number;
+  spec: HgsWindowSpec;
+  geometry: HgsWindowGeometry;
+  state: HgsWindowState;
+  focused: boolean;
+  edges: number;         // ResizeRequested (xdg_resize_edge 位图)
+}
+
+// 事件驱动 host: Created 建窗口 / TitleChanged 设标题 / GeometryChanged 调整 /
+// StateChanged 最大化还原 / RaiseRequested 带到前台 / CloseRequested 关闭。
+export const setWindowCallback: (cb: (event: HgsWindowEvent) => void) => void;
+// host 回执 (窗口系统实际变化后调用, 防 core 状态漂移)
+export const notifyWindowGeometry: (id: number, x: number, y: number, w: number, h: number) => void;
+export const notifyWindowFocus: (id: number, focused: boolean) => void;
+export const notifyWindowState: (id: number, state: HgsWindowState) => void;
+export const notifyWindowClosed: (id: number) => void;   // 创建失败/系统关窗回滚
+// 查询快照
+export const getWindow: (id: number) => HgsWindowSpec | null;
+export const listWindows: () => HgsWindowSpec[];
+export const getWindowZOrder: () => number[];
+
 // ── Wine 扩展 (@experimental — BetterSH/HarmonyBox 不要使用) ─────────────
 export const setPointerLockCallback: (cb: (locked: boolean, toplevelId: number) => void) => void;
 export const registerHostWindow: (windowId: number) => void;

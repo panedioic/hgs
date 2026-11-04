@@ -72,6 +72,7 @@ add_library(hgs SHARED
     graphics/shader_utils.cpp
     bridge/plugin_manager.cpp
     bridge/napi_host_adapter.cpp  # P1.1: NAPI 层 IHgsHost 适配 (set*Callback TSFN)
+    bridge/window_napi.cpp        # W2a: 窗口管理器 NAPI (setWindowCallback/notify/query)
     common/perf_utils.cpp
     logger/logger.cpp
     input/seat.cpp

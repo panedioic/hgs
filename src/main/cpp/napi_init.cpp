@@ -13,6 +13,7 @@
 #include "napi/native_api.h"
 #include "compositor/wayland_server.h"
 #include "bridge/plugin_manager.h"
+#include "bridge/window_napi.h"
 #include "input/input_manager.h"
 #include "input/pointer_extras.h"
 #include "input/game_controller_bridge.h"
@@ -103,6 +104,15 @@ static napi_value Init(napi_env env, napi_value exports) {
         {"attachSurface",           nullptr, hgs::surface::AttachSurfaceNAPI,       nullptr, nullptr, nullptr, napi_default, nullptr },
         {"resizeSurface",           nullptr, hgs::surface::ResizeSurfaceNAPI,       nullptr, nullptr, nullptr, napi_default, nullptr },
         {"detachSurface",           nullptr, hgs::surface::DetachSurfaceNAPI,       nullptr, nullptr, nullptr, napi_default, nullptr },
+        // 窗口管理器 (阶段 2 W2a)
+        {"setWindowCallback",       nullptr, hgs::window_napi::SetWindowCallbackNAPI, nullptr, nullptr, nullptr, napi_default, nullptr },
+        {"notifyWindowGeometry",    nullptr, hgs::window_napi::NotifyWindowGeometryNAPI, nullptr, nullptr, nullptr, napi_default, nullptr },
+        {"notifyWindowFocus",       nullptr, hgs::window_napi::NotifyWindowFocusNAPI, nullptr, nullptr, nullptr, napi_default, nullptr },
+        {"notifyWindowState",       nullptr, hgs::window_napi::NotifyWindowStateNAPI, nullptr, nullptr, nullptr, napi_default, nullptr },
+        {"notifyWindowClosed",      nullptr, hgs::window_napi::NotifyWindowClosedNAPI, nullptr, nullptr, nullptr, napi_default, nullptr },
+        {"getWindow",               nullptr, hgs::window_napi::GetWindowNAPI,       nullptr, nullptr, nullptr, napi_default, nullptr },
+        {"listWindows",             nullptr, hgs::window_napi::ListWindowsNAPI,     nullptr, nullptr, nullptr, napi_default, nullptr },
+        {"getWindowZOrder",         nullptr, hgs::window_napi::GetWindowZOrderNAPI, nullptr, nullptr, nullptr, napi_default, nullptr },
         // Controller and GamePad 相关
         {"initGameController",          nullptr, InitGameController,                nullptr, nullptr, nullptr, napi_default, nullptr },
         {"cleanupGameController",       nullptr, CleanupGameController,             nullptr, nullptr, nullptr, napi_default, nullptr },

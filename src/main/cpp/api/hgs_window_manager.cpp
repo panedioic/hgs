@@ -200,16 +200,23 @@ void HgsWindowManager::NotifyHostClosed(WindowId id) {
 void HgsWindowManager::Raise(WindowId id) {
     IWindowPolicy* policy = nullptr;
     IWindowHost* host = nullptr;
+    WindowSpec spec;
+    bool focused = false;
     {
         std::lock_guard<std::mutex> lk(mutex_);
-        if (windows_.find(id) == windows_.end()) return;
+        auto it = windows_.find(id);
+        if (it == windows_.end()) return;
         EraseFromZOrder(zOrder_, id);
         zOrder_.push_back(id);
+        spec = it->second;
+        focused = (focused_ == id);
         policy = policy_.get();
         host = host_;
     }
     if (policy != nullptr) policy->OnRaise(id);
     if (host != nullptr) host->RaiseWindow(id);
+    // 事件驱动 host (ArkTS) 据此把 OHOS 窗口带到前台
+    EmitState(WindowEventType::RaiseRequested, spec, focused);
 }
 
 void HgsWindowManager::Focus(WindowId id) {
