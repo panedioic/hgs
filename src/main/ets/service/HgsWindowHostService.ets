@@ -16,11 +16,9 @@
 import { window } from '@kit.ArkUI';
 import { common, Want } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
-import { hilog } from '@kit.PerformanceAnalysisKit';
 import hgs from 'libhgs.so';
 
 const TAG = 'HGS_WinHost';
-const DOMAIN = 0x0000;
 
 // HgsWindowEventType (与 C++ api/hgs_window_types.h 一致, 勿重排)
 const EV_CREATED = 1;
@@ -117,8 +115,7 @@ export class HgsWindowHostService {
     hgs.setWindowCallback((event) => {
       this.onEvent(event as WindowEventLike);
     });
-    hilog.info(DOMAIN, TAG, 'init: ability=%{public}s page=%{public}s scale=%{public}s',
-      this.abilityName(), this.pageUrl(), this.scale().toFixed(2));
+    hgs.LOGI(`[${TAG}] init: ability=${this.abilityName()} page=${this.pageUrl()} scale=${this.scale().toFixed(2)}`);
   }
 
   abilityName(): string {
@@ -145,8 +142,7 @@ export class HgsWindowHostService {
       this.applyState(rec, rec.spec.state);
       this.applyVisible(rec, rec.spec.visible);
     }
-    hilog.info(DOMAIN, TAG, 'attach tl=%{public}d win=%{public}d',
-      toplevelId, win.getWindowProperties().id);
+    hgs.LOGI(`[${TAG}] attach tl=${toplevelId} win=${win.getWindowProperties().id}`);
   }
 
   /** HgsAppWindowAbility.onWindowStageDestroy 调用。 */
@@ -155,7 +151,7 @@ export class HgsWindowHostService {
     // 用户直接关 OHOS 窗口时, core 仍持有该窗口 → 回执回滚;
     // core 主动销毁时此调用是幂等 no-op。
     hgs.notifyWindowClosed(toplevelId);
-    hilog.info(DOMAIN, TAG, 'detach tl=%{public}d', toplevelId);
+    hgs.LOGI(`[${TAG}] detach tl=${toplevelId}`);
   }
 
   private ensure(id: number): WindowRecord {
@@ -177,8 +173,7 @@ export class HgsWindowHostService {
         const r = this.windows.get(ev.id);
         if (r && r.ctx) {
           r.ctx.terminateSelf().catch((e: BusinessError) => {
-            hilog.warn(DOMAIN, TAG, 'terminateSelf tl=%{public}d: %{public}s',
-              ev.id, JSON.stringify(e));
+            hgs.LOGW(`[${TAG}] terminateSelf tl=${ev.id}: ${JSON.stringify(e)}`);
           });
         }
         this.windows.delete(ev.id);
@@ -214,32 +209,28 @@ export class HgsWindowHostService {
       case EV_RAISE_REQUESTED:
         if (rec && rec.win) {
           rec.win.show().catch((e: BusinessError) => {
-            hilog.warn(DOMAIN, TAG, 'show tl=%{public}d: %{public}s',
-              ev.id, JSON.stringify(e));
+            hgs.LOGW(`[${TAG}] show tl=${ev.id}: ${JSON.stringify(e)}`);
           });
         }
         break;
       case EV_CLOSE_REQUESTED:
         if (rec && rec.ctx) {
           rec.ctx.terminateSelf().catch((e: BusinessError) => {
-            hilog.warn(DOMAIN, TAG, 'close tl=%{public}d: %{public}s',
-              ev.id, JSON.stringify(e));
+            hgs.LOGW(`[${TAG}] close tl=${ev.id}: ${JSON.stringify(e)}`);
           });
         }
         break;
       case EV_MOVE_REQUESTED:
         if (rec && rec.win) {
           rec.win.startMoving().catch((e: BusinessError) => {
-            hilog.warn(DOMAIN, TAG, 'startMoving tl=%{public}d: %{public}s',
-              ev.id, JSON.stringify(e));
+            hgs.LOGW(`[${TAG}] startMoving tl=${ev.id}: ${JSON.stringify(e)}`);
           });
         }
         break;
       case EV_RESIZE_REQUESTED:
         // W2b: OHOS 无 startResize; 客户端的 resize_req 由 W3 跟手会话
         // (或系统窗口边框) 处理。这里只记录, 不做窗口操作。
-        hilog.info(DOMAIN, TAG, 'resize request tl=%{public}d edges=%{public}d (deferred)',
-          ev.id, ev.edges);
+        hgs.LOGI(`[${TAG}] resize request tl=${ev.id} edges=${ev.edges} (deferred)`);
         break;
       case EV_FOCUS_CHANGED:
         // 系统窗口焦点由 OHOS 管理; 事件用于逻辑 z-order/任务栏, 不强制改窗口
@@ -251,7 +242,7 @@ export class HgsWindowHostService {
 
   private createWindow(id: number, spec: WindowSpecLike): void {
     if (!this.ctx) {
-      hilog.error(DOMAIN, TAG, 'create tl=%{public}d without context', id);
+      hgs.LOGE(`[${TAG}] create tl=${id} without context`);
       hgs.notifyWindowClosed(id);  // 回滚 core 状态
       return;
     }
@@ -271,11 +262,9 @@ export class HgsWindowHostService {
       parameters: parameters,
     };
     this.ctx.startAbility(want).then(() => {
-      hilog.info(DOMAIN, TAG, 'startAbility tl=%{public}d %{public}dx%{public}d',
-        id, spec.width, spec.height);
+      hgs.LOGI(`[${TAG}] startAbility tl=${id} ${spec.width}x${spec.height}`);
     }).catch((e: BusinessError) => {
-      hilog.error(DOMAIN, TAG, 'startAbility tl=%{public}d failed: %{public}s',
-        id, JSON.stringify(e));
+      hgs.LOGE(`[${TAG}] startAbility tl=${id} failed: ${JSON.stringify(e)}`);
       this.windows.delete(id);
       hgs.notifyWindowClosed(id);  // 创建失败 → 回滚 core 状态
     });
@@ -284,7 +273,7 @@ export class HgsWindowHostService {
   private applyTitle(rec: WindowRecord, title: string): void {
     if (!rec.win || !title) return;
     rec.win.setWindowTitle(title).catch((e: BusinessError) => {
-      hilog.warn(DOMAIN, TAG, 'setWindowTitle: %{public}s', JSON.stringify(e));
+      hgs.LOGW(`[${TAG}] setWindowTitle: ${JSON.stringify(e)}`);
     });
   }
 
@@ -296,7 +285,7 @@ export class HgsWindowHostService {
     rec.lastW = w;
     rec.lastH = h;
     rec.win.resize(w, h).catch((e: BusinessError) => {
-      hilog.warn(DOMAIN, TAG, 'resize: %{public}s', JSON.stringify(e));
+      hgs.LOGW(`[${TAG}] resize: ${JSON.stringify(e)}`);
     });
   }
 
@@ -304,21 +293,21 @@ export class HgsWindowHostService {
     if (!rec.win) return;
     if (state === ST_MAXIMIZED) {
       rec.win.maximize().catch((e: BusinessError) => {
-        hilog.warn(DOMAIN, TAG, 'maximize: %{public}s', JSON.stringify(e));
+        hgs.LOGW(`[${TAG}] maximize: ${JSON.stringify(e)}`);
       });
     } else if (state === ST_MINIMIZED) {
       rec.win.minimize().catch((e: BusinessError) => {
-        hilog.warn(DOMAIN, TAG, 'minimize: %{public}s', JSON.stringify(e));
+        hgs.LOGW(`[${TAG}] minimize: ${JSON.stringify(e)}`);
       });
     } else if (state === ST_FULLSCREEN) {
       rec.win.setFullScreen(true).catch((e: BusinessError) => {
-        hilog.warn(DOMAIN, TAG, 'setFullScreen: %{public}s', JSON.stringify(e));
+        hgs.LOGW(`[${TAG}] setFullScreen: ${JSON.stringify(e)}`);
       });
     } else {
       // Normal: 退出全屏 + 还原
       rec.win.setFullScreen(false).catch((): void => { /* ignore */ });
       rec.win.restore().catch((e: BusinessError) => {
-        hilog.warn(DOMAIN, TAG, 'restore: %{public}s', JSON.stringify(e));
+        hgs.LOGW(`[${TAG}] restore: ${JSON.stringify(e)}`);
       });
     }
   }
@@ -327,13 +316,13 @@ export class HgsWindowHostService {
     if (!rec.win) return;
     if (visible) {
       rec.win.show().catch((e: BusinessError) => {
-        hilog.warn(DOMAIN, TAG, 'show: %{public}s', JSON.stringify(e));
+        hgs.LOGW(`[${TAG}] show: ${JSON.stringify(e)}`);
       });
     } else {
       // 本 SDK 的 Window 无 hide(); 用 minimize 表达"不可见" (与 BetterSH
       // 最小化语义一致; 任务栏/桌面模式由宿主策略决定是否另存窗口)
       rec.win.minimize().catch((e: BusinessError) => {
-        hilog.warn(DOMAIN, TAG, 'minimize: %{public}s', JSON.stringify(e));
+        hgs.LOGW(`[${TAG}] minimize: ${JSON.stringify(e)}`);
       });
     }
   }
