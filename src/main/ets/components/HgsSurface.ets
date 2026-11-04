@@ -715,13 +715,13 @@ export struct HgsSurface {
           .focusable(true)
           .focusOnTouch(true)
           .defaultFocus(true)
-          .onLoad((event?: object) => {
-            if (event) {
-              const id = this.resolveId ? this.resolveId() : this.toplevelId;
-              try {
-                hgs.bindXComponent(event, id);
-              } catch (_) {
-              }
+          .onLoad((_event?: object) => {
+            // W2b: bindXComponent 收 toplevelId (onLoad 事件对象 unwrap 不可靠,
+            // 见 graphics/egl_surface.cpp 注释); id 由 native 回调认领 surface
+            const id = this.resolveId ? this.resolveId() : this.toplevelId;
+            hgs.LOGI(`[${this.tag}] onLoad bindXComponent id=${id}`);
+            if (id > 0) {
+              hgs.bindXComponent(id);
             }
           })
       } else {

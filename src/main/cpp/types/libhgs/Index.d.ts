@@ -47,11 +47,12 @@ export interface HgsStartConfig {
 
 // ── surface (XComponent 生命周期, Stable) ─────────────────────────────────
 // surface 生命周期由 NativeXComponent 回调在原生层驱动 (XComponent
-// libraryname:'hgs' → OH_NATIVE_XCOMPONENT_OBJ); 非 Init 触发的 XComponent
-// (同进程第二个窗口) 经 bindXComponent 补挂回调。
-// N1 起可选第二参数 toplevelId: 绑定原生输入 + 原生 renderer
-// (backend=Native 时生效; 缺省 0 = 仅注册 surface 回调)。
-export const bindXComponent: (xcomp: object, toplevelId?: number) => void;
+// libraryname:'hgs' → OH_NATIVE_XCOMPONENT_OBJ)。
+// 页面 onLoad 传本窗口 toplevelId: 下一个/已存在的未绑定 surface 认领它,
+// 绑定原生输入 + 原生 renderer (backend=Native 时生效)。
+// (W2b 改签名: 旧 (xcomp, toplevelId?) 依赖 onLoad 事件 napi_unwrap,
+//  本 SDK 实测 unwrap failed — 见 graphics/egl_surface.cpp 注释)
+export const bindXComponent: (toplevelId: number) => void;
 
 // attachSurface 返回 generation (0 = 失败) — 后续 resize/detach 回传以
 // 防旧窗口事件误杀新 renderer; 传 0 = 通配 (兼容旧调用)。
