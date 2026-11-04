@@ -13,11 +13,9 @@
 #include <unordered_map>
 #include <utility>
 
-#undef LOG_TAG
-#undef LOG_DOMAIN
-#define LOG_DOMAIN 0x0000
-#define LOG_TAG "HGS_API"
-#include <hilog/log.h>
+// 项目统一日志器 (logger/logger.h): stderr/沙箱文件/hilog 三 sink,
+// printf 风格 — api 实现不直接调 hilog, 与 ets/NAPI 侧 logger 接入同款约定
+#include "logger/logger.h"
 
 #include "compositor/wayland_server.h"
 #include "bridge/plugin_manager.h"
@@ -42,7 +40,7 @@ struct HgsInstance::Impl {
             std::lock_guard<std::mutex> lk(mutex);
             lastError = msg;
         }
-        OH_LOG_WARN(LOG_APP, "[HGS-API] %{public}s", msg);
+        LOGW("[HGS-API] %s", msg);
     }
 
     IHgsHost* HostSnapshot() {
@@ -91,8 +89,8 @@ bool HgsInstance::Start(const HgsConfig& config) {
         if (type == ToplevelEventType::Unknown) {
             // 现有 21 种事件都能命中映射; 走到这里只可能是未来新增事件
             // 尚未同步 api/hgs_events.h — 丢弃并告警 (phase0 §4.7)
-            OH_LOG_WARN(LOG_APP, "[HGS-API] unknown toplevel event '%{public}s' dropped (id=%{public}u)",
-                        name != nullptr ? name : "(null)", id);
+            LOGW("[HGS-API] unknown toplevel event '%s' dropped (id=%u)",
+                 name != nullptr ? name : "(null)", id);
             return;
         }
         if (IHgsHost* host = impl->HostSnapshot()) {
@@ -212,8 +210,7 @@ bool HgsInstance::ResizeSurface(ToplevelId id, int32_t w, int32_t h, SurfaceGene
         std::lock_guard<std::mutex> lk(impl->mutex);
         const auto it = impl->surfaces.find(id);
         if (it == impl->surfaces.end() || it->second.second != gen) {
-            OH_LOG_WARN(LOG_APP, "[HGS-API] ResizeSurface stale gen=%{public}u id=%{public}u dropped",
-                        gen, id);
+            LOGW("[HGS-API] ResizeSurface stale gen=%u id=%u dropped", gen, id);
             return false;
         }
     }
@@ -227,8 +224,7 @@ bool HgsInstance::DetachSurface(ToplevelId id, SurfaceGeneration gen) {
         std::lock_guard<std::mutex> lk(impl->mutex);
         const auto it = impl->surfaces.find(id);
         if (it == impl->surfaces.end() || it->second.second != gen) {
-            OH_LOG_WARN(LOG_APP, "[HGS-API] DetachSurface stale gen=%{public}u id=%{public}u dropped",
-                        gen, id);
+            LOGW("[HGS-API] DetachSurface stale gen=%u id=%u dropped", gen, id);
             return false;
         }
     }
