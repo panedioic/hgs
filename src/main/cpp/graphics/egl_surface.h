@@ -1,26 +1,18 @@
 // hgs/src/main/cpp/graphics/egl_surface.h
 //
-// Native 侧 Surface 生命周期 (占位, 未来 useNativeSurfaceCallback 打开时
-// 由本文件实现接管: XComponent libraryname 触发 NativeXComponent 回调,
-// 生命周期与渲染在 native 层驱动)。
+// Native 侧 Surface 生命周期 (阶段 1 N1 起为原生路径的唯一入口):
+// XComponent libraryname:'hgs' 触发 NativeXComponent 回调; OnSurfaceCreated
+// 保存 OHNativeWindow*, bindXComponent(event, toplevelId) 后由
+// PluginManager::CreateRendererFromWindow 建真实渲染器 (项目 SDK 无
+// GetXComponentSurfaceId, 只能走 window 指针)。输入回调见 input/native_input。
 #pragma once
 
 #include <ace/xcomponent/native_interface_xcomponent.h>
 #include <hilog/log.h>
 #include <napi/native_api.h>
 
-#include <mutex>
-#include <string>
-#include <unordered_map>
-
-#include "smoke/egl_renderer.h"
-
 namespace hgs {
 namespace surface {
-
-// 以 OH_NativeXComponent* 为键的渲染器注册表 (每个 XComponent 实例一个)
-extern std::mutex gMutex;
-extern std::unordered_map<OH_NativeXComponent *, hgs::EmptyEglRenderer *> gRenderers;
 
 void OnSurfaceCreated(OH_NativeXComponent *comp, void *window);
 
@@ -30,9 +22,9 @@ void OnSurfaceDestroyed(OH_NativeXComponent *comp, void *window);
 
 extern OH_NativeXComponent_Callback gXcompCb;
 
-// NAPI: bindXComponent(xcompObject) — 非 Init 触发的 XComponent (同进程
-// 第二个窗口: 模块已加载, Init 不会再次执行) 在 onLoad 里显式补挂回调。
-// 参照 blender 的 bindSubXComponent。
+// NAPI: bindXComponent(xcompObject, toplevelId?) — 非 Init 触发的 XComponent
+// (同进程第二个窗口: 模块已加载, Init 不会再次执行) 在 onLoad 里显式补挂
+// 回调; 带 toplevelId 时同时绑定原生输入与 renderer。
 napi_value BindXComponent(napi_env env, napi_callback_info info);
 
 } // namespace surface

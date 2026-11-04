@@ -29,7 +29,6 @@ set(WAYLAND_LIBS_DIR ${NATIVERENDER_ROOT_PATH}/../../../libs/${OHOS_ARCH})
 
 add_library(hgs SHARED
     napi_init.cpp
-    smoke/egl_renderer.cpp
 
     # ── 公共 API 门面 (阶段 0) ──
     # api/*.h 零平台依赖; 实现文件是唯一允许依赖平台/现有单例的位置
