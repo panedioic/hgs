@@ -347,13 +347,16 @@ namespace hgs {
 namespace tl {
 
 napi_value SetToplevelCallbackNAPI(napi_env env, napi_callback_info info);
-napi_value GetCurrentToplevelIdNAPI(napi_env env, napi_callback_info info);
+napi_value SetToplevelEventCallbackNAPI(napi_env env, napi_callback_info info);  // P1.1 typed 契约
+napi_value GetCurrentToplevelIdNAPI(napi_env env, napi_callback_info info);      // @deprecated P1.1
+napi_value TakePendingToplevelNAPI(napi_env env, napi_callback_info info);       // P1.1 canonical
 napi_value SetPendingToplevelNAPI(napi_env env, napi_callback_info info);
 napi_value CancelPendingToplevelNAPI(napi_env env, napi_callback_info info);
 napi_value DestroyToplevelNAPI(napi_env env, napi_callback_info info);
-napi_value SendToplevelCloseNAPI(napi_env env, napi_callback_info info);
+napi_value SendToplevelCloseNAPI(napi_env env, napi_callback_info info);         // @deprecated P1.1
+napi_value CloseToplevelNAPI(napi_env env, napi_callback_info info);             // P1.1 canonical
 napi_value NotifyToplevelResizeNAPI(napi_env env, napi_callback_info info);
-napi_value NotifyToplevelResizeEndNAPI(napi_env env, napi_callback_info info);
+napi_value NotifyToplevelResizeEndNAPI(napi_env env, napi_callback_info info);   // @deprecated P1.1
 napi_value FindToplevelAtNAPI(napi_env env, napi_callback_info info);
 napi_value RaiseToplevelNAPI(napi_env env, napi_callback_info info);
 napi_value SetToplevelVisibleNAPI(napi_env env, napi_callback_info info);
@@ -364,8 +367,15 @@ namespace ws {
 
 napi_value StartServerNAPI(napi_env env, napi_callback_info info);
 napi_value StopServerNAPI(napi_env env, napi_callback_info info);
+napi_value IsRunningNAPI(napi_env env, napi_callback_info info);               // P1.1 canonical
+napi_value GetWaylandDisplayNameNAPI(napi_env env, napi_callback_info info);   // P1.1 canonical
+napi_value GetClientEnvironmentNAPI(napi_env env, napi_callback_info info);    // P1.1 canonical
+napi_value GetApiVersionNAPI(napi_env env, napi_callback_info info);           // P1.1 canonical
+napi_value GetLastErrorNAPI(napi_env env, napi_callback_info info);            // P1.1 canonical
+napi_value SetInputBackendNAPI(napi_env env, napi_callback_info info);         // P1.1 canonical
+napi_value GetInputBackendNAPI(napi_env env, napi_callback_info info);         // P1.1 canonical
 napi_value SetOutputSizeNAPI(napi_env env, napi_callback_info info);
-napi_value SetDisplayScaleNAPI(napi_env env, napi_callback_info info);
+napi_value SetDisplayScaleNAPI(napi_env env, napi_callback_info info);         // @deprecated P1.1
 napi_value SetDesktopModeNAPI(napi_env env, napi_callback_info info);
 napi_value GetDesktopRootIdNAPI(napi_env env, napi_callback_info info);
 napi_value SetStateCallbackNAPI(napi_env env, napi_callback_info info);

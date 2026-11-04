@@ -2,6 +2,7 @@
 #include "seat.h"
 #include "pointer_extras.h"
 #include "compositor/wayland_server.h"  // 保留: FlushQueue 的 move grab 动作委托 + InputTarget 别名
+#include "hgs_instance.h"               // P1.1: 输入 NAPI 经门面结构体转发
 #include "compositor/input/input_space_mapper.h"  // 坐标变换收口 (4C1): renderer 查找
                                             // fallback 已迁入, 本文件不再认识
                                             // PluginManager (include 已删)
@@ -859,7 +860,17 @@ napi_value SendPointerEventNAPI(napi_env env, napi_callback_info info) {
                     "px=(%{public}.0f,%{public}.0f) raw=(%{public}.1f,%{public}.1f) fromMouse=%{public}d",
                     tl, action, button, px, py, rawDx, rawDy, fromMouse ? 1 : 0);
     }
-    InputManager::GetInstance()->SendPointerEvent(tl, action, px, py, button, rawDx, rawDy, fromMouse);
+    // 阶段 1 (P1.1): 经 HgsInstance 门面结构体转发 (逐字段对应旧 8 参直调)
+    PointerEvent pe;
+    pe.hintToplevel = tl;
+    pe.action = static_cast<PointerAction>(action);
+    pe.x = px;
+    pe.y = py;
+    pe.button = static_cast<uint32_t>(button);
+    pe.rawDeltaX = rawDx;
+    pe.rawDeltaY = rawDy;
+    pe.fromMouse = fromMouse;
+    HgsInstance::Instance().SendPointerEvent(pe);
     return nullptr;
 }
 
@@ -874,7 +885,11 @@ napi_value SendKeyEventNAPI(napi_env env, napi_callback_info info) {
     napi_get_value_bool(env, args[2], &pressed);
     OH_LOG_INFO(LOG_APP, "[PIPE] key tl=%{public}u evdev=%{public}d down=%{public}s",
                 tl, evdevCode, pressed ? "true" : "false");
-    InputManager::GetInstance()->SendKeyEvent(tl, evdevCode, pressed);
+    KeyEvent ke;
+    ke.toplevelId = tl;
+    ke.evdevCode = evdevCode;
+    ke.pressed = pressed;
+    HgsInstance::Instance().SendKeyEvent(ke);
     return nullptr;
 }
 
@@ -892,7 +907,14 @@ napi_value SendScrollEventNAPI(napi_env env, napi_callback_info info) {
     napi_get_value_double(env, args[5], &py);
     OH_LOG_INFO(LOG_APP, "[PIPE] scroll tl=%{public}u axis=%{public}s val=%{public}.1f step=%{public}d px=(%{public}.0f,%{public}.0f)",
                 tl, axis == 0 ? "VERT" : "HORIZ", value, scrollStep, px, py);
-    InputManager::GetInstance()->SendScrollEvent(tl, axis, value, scrollStep, px, py);
+    ScrollEvent se;
+    se.hintToplevel = tl;
+    se.axis = axis;
+    se.value = value;
+    se.scrollStep = scrollStep;
+    se.x = px;
+    se.y = py;
+    HgsInstance::Instance().SendScrollEvent(se);
     return nullptr;
 }
 

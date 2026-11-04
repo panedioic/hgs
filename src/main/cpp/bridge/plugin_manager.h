@@ -76,8 +76,15 @@ private:
 namespace hgs {
 namespace surface {
 
-// NAPI: createRenderer/resizeRenderer/destroyRenderer — 按 toplevelId 的
-// 渲染器表管理 (定义暂在 bridge/plugin_manager.cpp, todo 迁入本文件)
+// 阶段 1 (P1.1) canonical surface 生命周期 (经 HgsInstance 门面):
+// attachSurface 返回 generation (0 = 失败); resize/detach 的 generation
+// 缺省 = 0 通配。旧名 createRenderer/resizeRenderer/destroyRenderer
+// 转发并打一次性 [HGS-DEPRECATED] (定义暂在本文件 .cpp, todo 迁入 egl_surface)
+napi_value AttachSurfaceNAPI(napi_env env, napi_callback_info info);
+napi_value ResizeSurfaceNAPI(napi_env env, napi_callback_info info);
+napi_value DetachSurfaceNAPI(napi_env env, napi_callback_info info);
+
+// @deprecated (阶段 1 起转发 attach/resize/detach)
 napi_value CreateRendererNAPI(napi_env env, napi_callback_info info);
 napi_value ResizeRendererNAPI(napi_env env, napi_callback_info info);
 napi_value DestroyRendererNAPI(napi_env env, napi_callback_info info);

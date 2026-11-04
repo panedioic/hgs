@@ -31,6 +31,8 @@ extern "C" void RegisterWlCoreGlobals(wl_display* display);
 #define LOG_TAG "WL_Server"
 #include <hilog/log.h>
 #include "bridge/plugin_manager.h"
+#include "bridge/napi_host_adapter.h"  // NAPI IHgsHost 适配 (阶段 1 P1.1)
+#include "hgs_instance.h"             // 公共门面 (阶段 1: NAPI 业务入口经此转发)
 
 // 核心协议接口表与实现已剥离到 wl_core.cpp (Phase 3 纯搬移)
 
@@ -520,69 +522,114 @@ void WaylandServer::NotifyToplevelResize(uint32_t toplevelId, int32_t w, int32_t
 
 // ========================================================================
 //  NAPI Export
+//  阶段 1 收口 (hgs-exported-api.md §4): 业务入口经 HgsInstance 门面;
+//  回调通道经 NapiHostAdapter (IHgsHost) 注册 — 本层不再直挂
+//  WaylandServer::SetToplevelCallback/SetStateCallback (bus 单 sink 由
+//  HgsInstance::Start 唯一安装, 事件统一 bus → IHgsHost → TSFN → JS)。
+//  旧名保留并转发新实现, 首次调用打 [HGS-DEPRECATED] (每名一次)。
 // ========================================================================
+
+namespace {
+
+// -- napi 对象属性读取助手 (startServer 的 HgsConfig 解析用) --
+bool NapiIsObject(napi_env env, napi_value v) {
+    napi_valuetype t;
+    return napi_typeof(env, v, &t) == napi_ok && t == napi_object;
+}
+
+bool NapiGetStr(napi_env env, napi_value obj, const char* key, std::string* out) {
+    napi_value v;
+    if (napi_get_named_property(env, obj, key, &v) != napi_ok) return false;
+    napi_valuetype t;
+    if (napi_typeof(env, v, &t) != napi_ok || t != napi_string) return false;
+    char buf[512];
+    size_t len = 0;
+    if (napi_get_value_string_utf8(env, v, buf, sizeof(buf), &len) != napi_ok) return false;
+    out->assign(buf, len);
+    return true;
+}
+
+bool NapiGetI32(napi_env env, napi_value obj, const char* key, int32_t* out) {
+    napi_value v;
+    if (napi_get_named_property(env, obj, key, &v) != napi_ok) return false;
+    napi_valuetype t;
+    if (napi_typeof(env, v, &t) != napi_ok || t != napi_number) return false;
+    double d = 0;
+    if (napi_get_value_double(env, v, &d) != napi_ok) return false;
+    *out = static_cast<int32_t>(d);
+    return true;
+}
+
+bool NapiGetU32(napi_env env, napi_value obj, const char* key, uint32_t* out) {
+    int32_t i = 0;
+    if (!NapiGetI32(env, obj, key, &i) || i < 0) return false;
+    *out = static_cast<uint32_t>(i);
+    return true;
+}
+
+bool NapiGetF64(napi_env env, napi_value obj, const char* key, double* out) {
+    napi_value v;
+    if (napi_get_named_property(env, obj, key, &v) != napi_ok) return false;
+    napi_valuetype t;
+    if (napi_typeof(env, v, &t) != napi_ok || t != napi_number) return false;
+    return napi_get_value_double(env, v, out) == napi_ok;
+}
+
+bool NapiGetBool(napi_env env, napi_value obj, const char* key, bool* out) {
+    napi_value v;
+    if (napi_get_named_property(env, obj, key, &v) != napi_ok) return false;
+    napi_valuetype t;
+    if (napi_typeof(env, v, &t) != napi_ok || t != napi_boolean) return false;
+    return napi_get_value_bool(env, v, out) == napi_ok;
+}
+
+} // namespace
 
 namespace hgs {
 namespace tl {
 
-// -- Toplevel 回调 -> ArkTS --
-static napi_threadsafe_function gToplevelTsfn = nullptr;
-
-struct ToplevelEvent {
-    uint32_t id;
-    std::string event;
-    std::string data;
-};
-
-static void CallJsToplevel(napi_env env, napi_value cb, void*, void* raw) {
-    auto* ev = static_cast<ToplevelEvent*>(raw);
-    if (env && cb && ev) {
-        OH_LOG_INFO(LOG_APP, "[MW-TSCB] calling JS toplevel cb: id=%{public}u event=%{public}s data=%{public}s",
-                    ev->id, ev->event.c_str(), ev->data.c_str());
-        napi_value undef, args[3];
-        napi_get_undefined(env, &undef);
-        napi_create_uint32(env, ev->id, &args[0]);
-        napi_create_string_utf8(env, ev->event.c_str(), NAPI_AUTO_LENGTH, &args[1]);
-        napi_create_string_utf8(env, ev->data.c_str(), NAPI_AUTO_LENGTH, &args[2]);
-        napi_call_function(env, undef, cb, 3, args, nullptr);
-    }
-    delete ev;
-}
-
-// -- NAPI: setToplevelCallback --
+// -- NAPI: setToplevelCallback -- (字符串契约 cb(id, event, json), 保留;
+//    typed 版见 setToplevelEventCallback — 后注册者覆盖前者, 单 sink)
 napi_value SetToplevelCallbackNAPI(napi_env env, napi_callback_info info) {
     size_t argc = 1;
     napi_value args[1];
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-
-    if (gToplevelTsfn) {
-        napi_release_threadsafe_function(gToplevelTsfn, napi_tsfn_release);
-        gToplevelTsfn = nullptr;
-    }
-
-    napi_value name;
-    napi_create_string_utf8(env, "WLToplevel", NAPI_AUTO_LENGTH, &name);
-    napi_create_threadsafe_function(env, args[0], nullptr, name,
-                                     0, 1, nullptr, nullptr, nullptr, CallJsToplevel, &gToplevelTsfn);
-
-    WaylandServer::GetInstance()->SetToplevelCallback([](uint32_t id, const char* event, const char* data) {
-        if (gToplevelTsfn) {
-            OH_LOG_INFO(LOG_APP, "[MW-TSCB] enqueue toplevel cb: id=%{public}u event=%{public}s", id, event);
-            auto* ev = new ToplevelEvent{id, event ? event : "", data ? data : "{}"};
-            napi_call_threadsafe_function(gToplevelTsfn, ev, napi_tsfn_blocking);
-        } else {
-            OH_LOG_WARN(LOG_APP, "[MW-TSCB] toplevel cb dropped (tsfn not ready): id=%{public}u event=%{public}s",
-                        id, event);
-        }
-    });
-
+    if (argc < 1) return nullptr;
+    NapiHostAdapter::Get().SetToplevelString(env, args[0]);
+    HgsInstance::Instance().SetHost(&NapiHostAdapter::Get());
     return nullptr;
 }
 
-// -- NAPI: getCurrentToplevelId -- (WineWindow.aboutToAppear 同步读取, 无竞态)
+// -- NAPI: setToplevelEventCallback -- (typed 契约 cb(id, type, json);
+//    type = HgsToplevelEventType 数值, hgs-exported-api.md §4.2)
+napi_value SetToplevelEventCallbackNAPI(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    if (argc < 1) return nullptr;
+    NapiHostAdapter::Get().SetToplevelTyped(env, args[0]);
+    HgsInstance::Instance().SetHost(&NapiHostAdapter::Get());
+    return nullptr;
+}
+
+// -- NAPI: getCurrentToplevelId -- @deprecated → takePendingToplevel
+//   (WineWindow.aboutToAppear 同步读取, 无竞态)
 napi_value GetCurrentToplevelIdNAPI(napi_env env, napi_callback_info info) {
-    uint32_t id = PluginManager::GetInstance()->DequeuePendingToplevel();
+    static bool s_dep = false;
+    if (!s_dep) {
+        s_dep = true;
+        OH_LOG_WARN(LOG_APP, "[HGS-DEPRECATED] getCurrentToplevelId → takePendingToplevel (阶段 3 删除)");
+    }
+    uint32_t id = HgsInstance::Instance().TakePendingToplevel();
     OH_LOG_INFO(LOG_APP, "[MW-NAPI] getCurrentToplevelId = %{public}u", id);
+    napi_value r;
+    napi_create_uint32(env, id, &r);
+    return r;
+}
+
+// -- NAPI: takePendingToplevel -- (canonical; 出队语义, 空 → 0)
+napi_value TakePendingToplevelNAPI(napi_env env, napi_callback_info) {
+    uint32_t id = HgsInstance::Instance().TakePendingToplevel();
     napi_value r;
     napi_create_uint32(env, id, &r);
     return r;
@@ -595,7 +642,7 @@ napi_value SetPendingToplevelNAPI(napi_env env, napi_callback_info info) {
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
     uint32_t id = 0;
     napi_get_value_uint32(env, args[0], &id);
-    PluginManager::GetInstance()->SetPendingToplevel(id);
+    HgsInstance::Instance().SetPendingToplevel(id);
     OH_LOG_INFO(LOG_APP, "[MW-NAPI] setPendingToplevel id=%{public}u", id);
     return nullptr;
 }
@@ -608,7 +655,7 @@ napi_value CancelPendingToplevelNAPI(napi_env env, napi_callback_info info) {
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
     uint32_t id = 0;
     napi_get_value_uint32(env, args[0], &id);
-    PluginManager::GetInstance()->CancelPendingToplevel(id);
+    HgsInstance::Instance().CancelPendingToplevel(id);
     return nullptr;
 }
 
@@ -619,24 +666,37 @@ napi_value DestroyToplevelNAPI(napi_env env, napi_callback_info info) {
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
     uint32_t id = 0;
     napi_get_value_uint32(env, args[0], &id);
-    PluginManager::GetInstance()->DestroyToplevel(id);
-    // 相对模式锁定兜底: 宿主主动销毁 toplevel (WWA 关窗) 时释放 host 锁定 —
-    // 游戏卡死时 wine 不响应 sendToplevelClose, relative_pointer 永不销毁,
-    // 正常解锁回调不来 (见 PointerExtras::ReleaseLockForToplevel)
-    PointerExtras::GetInstance()->ReleaseLockForToplevel(id);
+    // 门面语义 = renderer 收尾 + 相对模式锁定兜底释放 (PointerExtras)
+    HgsInstance::Instance().DestroyToplevel(id);
     OH_LOG_INFO(LOG_APP, "[MW-NAPI] destroyToplevel id=%{public}u", id);
     return nullptr;
 }
 
-// -- NAPI: sendToplevelClose -- (通知 Wine 关闭窗口)
+// -- NAPI: sendToplevelClose -- @deprecated → closeToplevel
 napi_value SendToplevelCloseNAPI(napi_env env, napi_callback_info info) {
+    static bool s_dep = false;
+    if (!s_dep) {
+        s_dep = true;
+        OH_LOG_WARN(LOG_APP, "[HGS-DEPRECATED] sendToplevelClose → closeToplevel (阶段 3 删除)");
+    }
     size_t argc = 1;
     napi_value args[1];
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
     uint32_t id = 0;
     napi_get_value_uint32(env, args[0], &id);
     OH_LOG_INFO(LOG_APP, "[MW-NAPI] sendToplevelClose id=%{public}u", id);
-    WaylandServer::GetInstance()->SendToplevelClose(id);
+    HgsInstance::Instance().SendToplevelClose(id);
+    return nullptr;
+}
+
+// -- NAPI: closeToplevel -- (canonical; xdg_toplevel.send_close)
+napi_value CloseToplevelNAPI(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    uint32_t id = 0;
+    napi_get_value_uint32(env, args[0], &id);
+    HgsInstance::Instance().SendToplevelClose(id);
     return nullptr;
 }
 
@@ -653,13 +713,19 @@ napi_value NotifyToplevelResizeNAPI(napi_env env, napi_callback_info info) {
     if (argc >= 4) napi_get_value_bool(env, args[3], &resizing);
     OH_LOG_INFO(LOG_APP, "[NAPI] notifyToplevelResize tl=%{public}u %{public}dx%{public}d resize=%{public}s",
                 tl, w, h, resizing ? "yes" : "no");
-    WaylandServer::GetInstance()->NotifyToplevelResize(tl, w, h, resizing);
+    HgsInstance::Instance().NotifyToplevelResize(tl, w, h, resizing);
     return nullptr;
 }
 
 // 拖拽缩放结束 (ArkTS windowRectChange DRAG_END): 发 configure(0,0) 清 RESIZING
 // 状态, Wine 保持当前尺寸 (0 尺寸 → SWP_NOSIZE) 并退出 size-move。
+// -- NAPI: notifyToplevelResizeEnd -- @deprecated → notifyToplevelResize(id,0,0,false)
 napi_value NotifyToplevelResizeEndNAPI(napi_env env, napi_callback_info info) {
+    static bool s_dep = false;
+    if (!s_dep) {
+        s_dep = true;
+        OH_LOG_WARN(LOG_APP, "[HGS-DEPRECATED] notifyToplevelResizeEnd → notifyToplevelResize(id,0,0,false) (阶段 3 删除)");
+    }
     size_t argc = 1;
     napi_value args[1];
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
@@ -667,7 +733,7 @@ napi_value NotifyToplevelResizeEndNAPI(napi_env env, napi_callback_info info) {
     uint32_t tl;
     napi_get_value_uint32(env, args[0], &tl);
     OH_LOG_INFO(LOG_APP, "[NAPI] notifyToplevelResizeEnd tl=%{public}u", tl);
-    WaylandServer::GetInstance()->NotifyToplevelResize(tl, 0, 0, false);
+    HgsInstance::Instance().NotifyToplevelResize(tl, 0, 0, false);
     return nullptr;
 }
 
@@ -689,7 +755,7 @@ napi_value FindToplevelAtNAPI(napi_env env, napi_callback_info info) {
     int32_t lx = wl_fixed_to_int(wx);
     int32_t ly = wl_fixed_to_int(wy);
 
-    uint32_t id = ws->FindToplevelAt(lx, ly);
+    uint32_t id = HgsInstance::Instance().FindToplevelAt(lx, ly);
     napi_value result;
     napi_create_uint32(env, id, &result);
     return result;
@@ -704,8 +770,9 @@ napi_value RaiseToplevelNAPI(napi_env env, napi_callback_info info) {
     uint32_t tl;
     napi_get_value_uint32(env, args[0], &tl);
     // 用户显式操作 (任务栏/窗口点击) 路径: 已 fullscreen 的目标会重新取
-    // 全屏优先级号, 支撑两个全屏窗口间的主动切换
-    WaylandServer::GetInstance()->RaiseToplevel(tl, true);
+    // 全屏优先级号, 支撑两个全屏窗口间的主动切换 (门面 RaiseToplevel 固定
+    // userInitiated=true)
+    HgsInstance::Instance().RaiseToplevel(tl);
     return nullptr;
 }
 
@@ -717,11 +784,8 @@ napi_value SetToplevelVisibleNAPI(napi_env env, napi_callback_info info) {
     uint32_t tl; bool visible;
     napi_get_value_uint32(env, args[0], &tl);
     napi_get_value_bool(env, args[1], &visible);
-    InputManager::GetInstance()->SetToplevelVisible(tl, visible);
-    if (visible) {
-        // 6A: 兼容别名 NotifyWindowRestored 已删, 直调语义方法 (同实现同值)
-        WaylandServer::GetInstance()->SetToplevelRestored(tl);
-    }
+    // 门面组合语义: 输入可见性 + visible=true 附带 SetToplevelRestored
+    HgsInstance::Instance().SetToplevelVisible(tl, visible);
     return nullptr;
 }
 
@@ -729,31 +793,89 @@ napi_value SetToplevelVisibleNAPI(napi_env env, napi_callback_info info) {
 
 namespace ws {
 
-// -- NAPI: startServer --
+// -- NAPI: startServer -- (canonical: string | HgsConfig 对象)。
+// 字符串形式 = 旧调用零改动 (其余配置缺省 = 不修改宿主预设);
+// 对象形式字段: socketPath(必填)/output{width,height,scale}/composition/
+// inputBackend/features{...}/setProcessEnvironment
+// (枚举数值契约见 hgs-exported-api.md §4.2)。
 napi_value StartServerNAPI(napi_env env, napi_callback_info info) {
     size_t argc = 1;
     napi_value args[1];
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    if (argc < 1) {
+        OH_LOG_ERROR(LOG_APP, "[NAPI] startServer: 需要 socketPath 或 HgsConfig");
+        napi_value r;
+        napi_get_boolean(env, false, &r);
+        return r;
+    }
 
-    char path[512] = {};
-    napi_get_value_string_utf8(env, args[0], path, sizeof(path), nullptr);
+    HgsConfig cfg;
+    napi_valuetype t;
+    napi_typeof(env, args[0], &t);
+    if (t == napi_string) {
+        char path[512] = {};
+        napi_get_value_string_utf8(env, args[0], path, sizeof(path), nullptr);
+        cfg.socketPath = path;
+    } else if (NapiIsObject(env, args[0])) {
+        std::string path;
+        if (NapiGetStr(env, args[0], "socketPath", &path)) cfg.socketPath = path;
+        napi_value output;
+        if (napi_get_named_property(env, args[0], "output", &output) == napi_ok &&
+            NapiIsObject(env, output)) {
+            NapiGetI32(env, output, "width", &cfg.output.width);
+            NapiGetI32(env, output, "height", &cfg.output.height);
+            NapiGetF64(env, output, "scale", &cfg.output.scale);
+            NapiGetU32(env, output, "refreshMilliHz",
+                       reinterpret_cast<uint32_t*>(&cfg.output.refreshMilliHz));
+        }
+        uint32_t comp = 0;
+        if (NapiGetU32(env, args[0], "composition", &comp) &&
+            comp <= static_cast<uint32_t>(CompositionMode::DesktopRoot)) {
+            cfg.composition = static_cast<CompositionMode>(comp);
+        }
+        uint32_t backend = 0;
+        if (NapiGetU32(env, args[0], "inputBackend", &backend) &&
+            backend <= static_cast<uint32_t>(InputBackend::Native)) {
+            cfg.inputBackend = static_cast<InputBackend>(backend);
+        }
+        napi_value feats;
+        if (napi_get_named_property(env, args[0], "features", &feats) == napi_ok &&
+            NapiIsObject(env, feats)) {
+            NapiGetBool(env, feats, "shm", &cfg.features.shm);
+            NapiGetBool(env, feats, "subsurface", &cfg.features.subsurface);
+            NapiGetBool(env, feats, "viewporter", &cfg.features.viewporter);
+            NapiGetBool(env, feats, "xdgPopup", &cfg.features.xdgPopup);
+            NapiGetBool(env, feats, "dataDevice", &cfg.features.dataDevice);
+            NapiGetBool(env, feats, "relativePointer", &cfg.features.relativePointer);
+            NapiGetBool(env, feats, "textInput", &cfg.features.textInput);
+            NapiGetBool(env, feats, "externalSurface", &cfg.features.externalSurface);
+            NapiGetBool(env, feats, "winehuaToplevel", &cfg.features.winehuaToplevel);
+        }
+        NapiGetBool(env, args[0], "setProcessEnvironment", &cfg.setProcessEnvironment);
+    } else {
+        OH_LOG_ERROR(LOG_APP, "[NAPI] startServer: 参数类型需为 string 或 HgsConfig 对象");
+        napi_value r;
+        napi_get_boolean(env, false, &r);
+        return r;
+    }
 
-    OH_LOG_WARN(LOG_APP, "[NAPI] startServer: %{public}s", path);
-    // 确保 socket 父目录存在 (WINEPREFIX=.wine/)
+    OH_LOG_WARN(LOG_APP, "[NAPI] startServer: %{public}s", cfg.socketPath.c_str());
+    // 确保 socket 父目录存在 (WINEPREFIX=.wine/; 0755 供 wine 子进程访问 —
+    // WaylandServer::Start 内部另有 0700 mkdir, 此处保持旧 NAPI 行为)
     {
-        std::string sockDir = path;
+        std::string sockDir = cfg.socketPath;
         auto pos = sockDir.find_last_of('/');
         if (pos != std::string::npos) {
             sockDir = sockDir.substr(0, pos);
             mkdir(sockDir.c_str(), 0755);
         }
     }
-    bool ok = WaylandServer::GetInstance()->Start(path);
+    bool ok = HgsInstance::Instance().Start(cfg);
     OH_LOG_WARN(LOG_APP, "[NAPI] startServer result: %{public}s", ok ? "OK" : "FAIL");
     // 确认 socket 文件存在
     if (ok) {
         struct stat st;
-        int sr = stat(path, &st);
+        int sr = stat(cfg.socketPath.c_str(), &st);
         OH_LOG_WARN(LOG_APP, "[NAPI] wayland socket stat=%{public}d (errno=%{public}d)",
                     sr, sr == 0 ? 0 : errno);
     }
@@ -765,8 +887,72 @@ napi_value StartServerNAPI(napi_env env, napi_callback_info info) {
 
 // -- NAPI: stopServer — 停止内嵌 Wayland compositor --
 napi_value StopServerNAPI(napi_env, napi_callback_info) {
-    WaylandServer::GetInstance()->Stop();
+    HgsInstance::Instance().Stop();
     return nullptr;
+}
+
+// -- NAPI: isRunning -- (canonical)
+napi_value IsRunningNAPI(napi_env env, napi_callback_info) {
+    napi_value r;
+    napi_get_boolean(env, HgsInstance::Instance().IsRunning(), &r);
+    return r;
+}
+
+// -- NAPI: getWaylandDisplayName -- (canonical; 未启动/无效路径返回空串)
+napi_value GetWaylandDisplayNameNAPI(napi_env env, napi_callback_info) {
+    const std::string name = HgsInstance::Instance().WaylandDisplayName();
+    napi_value r;
+    napi_create_string_utf8(env, name.c_str(), NAPI_AUTO_LENGTH, &r);
+    return r;
+}
+
+// -- NAPI: getClientEnvironment -- (canonical; string[]: XDG_RUNTIME_DIR/WAYLAND_DISPLAY)
+napi_value GetClientEnvironmentNAPI(napi_env env, napi_callback_info) {
+    const std::vector<std::string> envs = HgsInstance::Instance().ClientEnvironment();
+    napi_value arr;
+    napi_create_array_with_length(env, envs.size(), &arr);
+    for (size_t i = 0; i < envs.size(); i++) {
+        napi_value s;
+        napi_create_string_utf8(env, envs[i].c_str(), NAPI_AUTO_LENGTH, &s);
+        napi_set_element(env, arr, static_cast<uint32_t>(i), s);
+    }
+    return arr;
+}
+
+// -- NAPI: getApiVersion -- (canonical; major<<16 | minor, 阶段 1 = 0x10001)
+napi_value GetApiVersionNAPI(napi_env env, napi_callback_info) {
+    napi_value r;
+    napi_create_uint32(env, HgsInstance::ApiVersion(), &r);
+    return r;
+}
+
+// -- NAPI: getLastError -- (canonical; 最近一次失败原因, 空串 = 无错误)
+napi_value GetLastErrorNAPI(napi_env env, napi_callback_info) {
+    const std::string err = HgsInstance::Instance().LastError();
+    napi_value r;
+    napi_create_string_utf8(env, err.c_str(), NAPI_AUTO_LENGTH, &r);
+    return r;
+}
+
+// -- NAPI: setInputBackend -- (canonical; 0=Auto 1=ArkTS 2=Native, 阶段 1 记录)
+napi_value SetInputBackendNAPI(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    uint32_t mode = 0;
+    if (argc >= 1) napi_get_value_uint32(env, args[0], &mode);
+    HgsInstance::Instance().SetInputBackend(
+        mode <= static_cast<uint32_t>(InputBackend::Native)
+            ? static_cast<InputBackend>(mode) : InputBackend::Auto);
+    return nullptr;
+}
+
+// -- NAPI: getInputBackend -- (canonical)
+napi_value GetInputBackendNAPI(napi_env env, napi_callback_info) {
+    napi_value r;
+    napi_create_uint32(
+        env, static_cast<uint32_t>(HgsInstance::Instance().GetInputBackend()), &r);
+    return r;
 }
 
 // -- NAPI: setOutputSize --
@@ -778,13 +964,20 @@ napi_value SetOutputSizeNAPI(napi_env env, napi_callback_info info) {
     int32_t w, h;
     napi_get_value_int32(env, args[0], &w);
     napi_get_value_int32(env, args[1], &h);
-    WaylandServer::GetInstance()->SetOutputSize(w, h);
+    HgsInstance::Instance().SetOutputSize(w, h);
     return nullptr;
 }
 
+// -- NAPI: setDisplayScale -- @deprecated (现 no-op; 阶段 2 由
+//    HgsConfig.output.scale 取代)
 // 已无效: C++ 坐标换算不使用 display scale (letterbox 由 renderer viewport 推导,
 // globalDisplayScale_ 只写不读已删除)。保留导出仅为兼容 ArkTS 侧调用, 收到直接忽略。
 napi_value SetDisplayScaleNAPI(napi_env env, napi_callback_info info) {
+    static bool s_dep = false;
+    if (!s_dep) {
+        s_dep = true;
+        OH_LOG_WARN(LOG_APP, "[HGS-DEPRECATED] setDisplayScale 是 no-op (阶段 2 由 HgsConfig.output.scale 取代)");
+    }
     (void)env;
     (void)info;
     return nullptr;
@@ -797,53 +990,28 @@ napi_value SetDesktopModeNAPI(napi_env env, napi_callback_info info) {
     if (argc >= 1) {
         bool on;
         napi_get_value_bool(env, args[0], &on);
-        WaylandServer::GetInstance()->SetDesktopMode(on);
+        HgsInstance::Instance().SetDesktopMode(on);
         OH_LOG_INFO(LOG_APP, "[MW-NAPI] setDesktopMode = %{public}s", on ? "true" : "false");
     }
     return nullptr;
 }
 
 napi_value GetDesktopRootIdNAPI(napi_env env, napi_callback_info) {
-    uint32_t id = WaylandServer::GetInstance()->GetDesktopRootToplevelId();
+    uint32_t id = HgsInstance::Instance().DesktopRootId();
     napi_value r;
     napi_create_uint32(env, id, &r);
     return r;
 }
 
 // -- State 回调 -> ArkTS (合成器 FireState: evt:desktop-ready 等) --
-static void CallJsState(napi_env env, napi_value cb, void*, void* data) {
-    char* msg = static_cast<char*>(data);
-    if (env && cb && msg) {
-        napi_value undef, arg;
-        napi_get_undefined(env, &undef);
-        napi_create_string_utf8(env, msg, NAPI_AUTO_LENGTH, &arg);
-        napi_call_function(env, undef, cb, 1, &arg, nullptr);
-    }
-    free(msg);
-}
-
-// 状态通道 TSFN (setStateCallback 注册; FireState 经 stateCb_ 投递到这里)
-static napi_threadsafe_function gHgsStateTsfn = nullptr;
-
+// 阶段 1: TSFN 机制迁 NapiHostAdapter, 本入口只做注册 (经 IHgsHost)。
 napi_value SetStateCallbackNAPI(napi_env env, napi_callback_info info) {
     size_t argc = 1;
     napi_value args[1];
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-
-    if (gHgsStateTsfn) {
-        napi_release_threadsafe_function(gHgsStateTsfn, napi_tsfn_release);
-        gHgsStateTsfn = nullptr;
-    }
-    napi_value name;
-    napi_create_string_utf8(env, "HgsState", NAPI_AUTO_LENGTH, &name);
-    napi_create_threadsafe_function(env, args[0], nullptr, name,
-                                     0, 1, nullptr, nullptr, nullptr, CallJsState, &gHgsStateTsfn);
-    // 注入 hgs 侧 WaylandServer (合成器域迁入后, FireState 通道归 hgs)
-    WaylandServer::GetInstance()->SetStateCallback([](const char* st) {
-        if (gHgsStateTsfn) {
-            napi_call_threadsafe_function(gHgsStateTsfn, strdup(st), napi_tsfn_blocking);
-        }
-    });
+    if (argc < 1) return nullptr;
+    NapiHostAdapter::Get().SetState(env, args[0]);
+    HgsInstance::Instance().SetHost(&NapiHostAdapter::Get());
     return nullptr;
 }
 

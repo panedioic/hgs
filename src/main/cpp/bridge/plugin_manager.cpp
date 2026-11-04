@@ -1,5 +1,6 @@
 #include "plugin_manager.h"
 #include "compositor/wayland_server.h"
+#include "hgs_instance.h"  // P1.1: surface NAPI 经门面 (generation 表)
 #include <native_window/external_window.h>
 #include <napi/native_api.h>
 #include <algorithm>
@@ -156,11 +157,93 @@ void PluginManager::MoveRendererToToplevel(uint32_t oldId, uint32_t newId) {
 // ========================================================================
 
 // todo: 未来放入 egl_surface -> 改为 native 实现。目前暂时放在这里
+// 阶段 1 (P1.1): canonical 入口 attachSurface/resizeSurface/detachSurface
+// 经 HgsInstance 门面 (generation 表); 旧名 createRenderer/resizeRenderer/
+// destroyRenderer 转发并打一次性 [HGS-DEPRECATED]。
 namespace hgs {
 namespace surface {
 
-// -- NAPI: createRenderer -- (XComponentController.onSurfaceCreated 调用)
+// -- NAPI: attachSurface -- (canonical; (toplevelId, surfaceId:bigint) → generation)
+// 失败返回 0。Native XComponent 路径 (inputBackend=Native) 不经此入口 —
+// OnSurfaceCreated 直接持 OHNativeWindow*, 由 HGS 内部绑定 (phase0 §14.5)。
+napi_value AttachSurfaceNAPI(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value args[2];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    if (argc < 2) {
+        OH_LOG_ERROR(LOG_APP, "[MW-NAPI] attachSurface: need 2 args (toplevelId, surfaceId)");
+        napi_value r;
+        napi_create_uint32(env, 0, &r);
+        return r;
+    }
+    uint32_t tid = 0;
+    napi_get_value_uint32(env, args[0], &tid);
+    int64_t surfaceId = 0;
+    bool lossless = true;
+    napi_status s = napi_get_value_bigint_int64(env, args[1], &surfaceId, &lossless);
+    if (s != napi_ok) {
+        OH_LOG_ERROR(LOG_APP, "[MW-NAPI] attachSurface: BIGINT parse failed status=%{public}d", s);
+        napi_value r;
+        napi_create_uint32(env, 0, &r);
+        return r;
+    }
+    OH_LOG_INFO(LOG_APP, "[MW-NAPI] attachSurface tl=%{public}u surfaceId=%{public}ld", tid, surfaceId);
+    const uint32_t gen = HgsInstance::Instance().AttachSurface(tid, static_cast<uint64_t>(surfaceId));
+    if (gen == 0) {
+        OH_LOG_ERROR(LOG_APP, "[MW-NAPI] attachSurface FAILED (see getLastError)");
+    }
+    napi_value r;
+    napi_create_uint32(env, gen, &r);
+    return r;
+}
+
+// -- NAPI: resizeSurface -- (canonical; generation 缺省 = 0 通配)
+napi_value ResizeSurfaceNAPI(napi_env env, napi_callback_info info) {
+    size_t argc = 4;
+    napi_value args[4];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    if (argc < 3) {
+        OH_LOG_ERROR(LOG_APP, "[MW-NAPI] resizeSurface: need 3 args (toplevelId, w, h[, generation])");
+        napi_value r;
+        napi_get_boolean(env, false, &r);
+        return r;
+    }
+    uint32_t tid = 0, gen = 0;
+    napi_get_value_uint32(env, args[0], &tid);
+    int32_t w = 0, h = 0;
+    napi_get_value_int32(env, args[1], &w);
+    napi_get_value_int32(env, args[2], &h);
+    if (argc >= 4) napi_get_value_uint32(env, args[3], &gen);
+    OH_LOG_INFO(LOG_APP, "[MW-NAPI] resizeSurface tl=%{public}u %{public}dx%{public}d gen=%{public}u", tid, w, h, gen);
+    const bool ok = HgsInstance::Instance().ResizeSurface(tid, w, h, gen);
+    napi_value r;
+    napi_get_boolean(env, ok, &r);
+    return r;
+}
+
+// -- NAPI: detachSurface -- (canonical; 只释放 surface/renderer, 不触碰
+//    toplevel 与 pointer lock; generation 缺省 = 0 通配)
+napi_value DetachSurfaceNAPI(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value args[2];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    uint32_t tid = 0, gen = 0;
+    if (argc >= 1) napi_get_value_uint32(env, args[0], &tid);
+    if (argc >= 2) napi_get_value_uint32(env, args[1], &gen);
+    OH_LOG_INFO(LOG_APP, "[MW-NAPI] detachSurface tl=%{public}u gen=%{public}u", tid, gen);
+    const bool ok = HgsInstance::Instance().DetachSurface(tid, gen);
+    napi_value r;
+    napi_get_boolean(env, ok, &r);
+    return r;
+}
+
+// -- NAPI: createRenderer -- @deprecated → attachSurface (返回值忽略 generation)
 napi_value CreateRendererNAPI(napi_env env, napi_callback_info info) {
+    static bool s_dep = false;
+    if (!s_dep) {
+        s_dep = true;
+        OH_LOG_WARN(LOG_APP, "[HGS-DEPRECATED] createRenderer → attachSurface (阶段 3 删除)");
+    }
     size_t argc = 2;
     napi_value args[2];
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
@@ -178,12 +261,17 @@ napi_value CreateRendererNAPI(napi_env env, napi_callback_info info) {
         return nullptr;
     }
     OH_LOG_INFO(LOG_APP, "[MW-NAPI] createRenderer tl=%{public}u surfaceId=%{public}ld", tid, surfaceId);
-    PluginManager::GetInstance()->CreateRenderer(tid, surfaceId);
+    HgsInstance::Instance().AttachSurface(tid, static_cast<uint64_t>(surfaceId));  // generation 忽略
     return nullptr;
 }
 
-// -- NAPI: resizeRenderer -- (XComponentController.onSurfaceChanged 调用)
+// -- NAPI: resizeRenderer -- @deprecated → resizeSurface(gen=0)
 napi_value ResizeRendererNAPI(napi_env env, napi_callback_info info) {
+    static bool s_dep = false;
+    if (!s_dep) {
+        s_dep = true;
+        OH_LOG_WARN(LOG_APP, "[HGS-DEPRECATED] resizeRenderer → resizeSurface (阶段 3 删除)");
+    }
     size_t argc = 3;
     napi_value args[3];
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
@@ -197,12 +285,17 @@ napi_value ResizeRendererNAPI(napi_env env, napi_callback_info info) {
     napi_get_value_int32(env, args[1], &w);
     napi_get_value_int32(env, args[2], &h);
     OH_LOG_INFO(LOG_APP, "[MW-NAPI] resizeRenderer tl=%{public}u %{public}dx%{public}d", tid, w, h);
-    PluginManager::GetInstance()->ResizeRenderer(tid, w, h);
+    HgsInstance::Instance().ResizeSurface(tid, w, h, 0);
     return nullptr;
 }
 
-// -- NAPI: destroyRenderer -- (XComponentController.onSurfaceDestroyed 调用)
+// -- NAPI: destroyRenderer -- @deprecated → detachSurface(gen=0)
 napi_value DestroyRendererNAPI(napi_env env, napi_callback_info info) {
+    static bool s_dep = false;
+    if (!s_dep) {
+        s_dep = true;
+        OH_LOG_WARN(LOG_APP, "[HGS-DEPRECATED] destroyRenderer → detachSurface (阶段 3 删除)");
+    }
     size_t argc = 1;
     napi_value args[1];
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
@@ -211,7 +304,7 @@ napi_value DestroyRendererNAPI(napi_env env, napi_callback_info info) {
         napi_get_value_uint32(env, args[0], &tid);
     }
     OH_LOG_INFO(LOG_APP, "[MW-NAPI] destroyRenderer tl=%{public}u", tid);
-    PluginManager::GetInstance()->DestroyToplevel(tid);
+    HgsInstance::Instance().DetachSurface(tid, 0);
     return nullptr;
 }
 
