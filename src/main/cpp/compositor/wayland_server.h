@@ -65,7 +65,11 @@ public:
     // policy.desktop 运行期可变 (用户切换融合/虚拟桌面), 故用引用而非值。
     const bool& DesktopModeRef() const { return session_.policy.desktop; }
 
-    bool Start(const std::string& socketPath);
+    // setProcessEnvironment=false: 不 setenv XDG_RUNTIME_DIR/WAYLAND_DISPLAY
+    // (宿主经 HgsInstance::ClientEnvironment() 显式传给子进程 — WineHua 的
+    // wine_env.cpp 已按 sockDir/sockName 组环境, 不依赖本进程 setenv)。
+    // 默认 true 保持旧行为。
+    bool Start(const std::string& socketPath, bool setProcessEnvironment = true);
     void Stop();
     // 只读访问器 (阶段 0 P0.3): HgsInstance::IsRunning 经此查询事件循环
     // 状态。running_ 为 atomic, 任意线程安全。

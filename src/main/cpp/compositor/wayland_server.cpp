@@ -42,7 +42,7 @@ WaylandServer* WaylandServer::GetInstance() {
     return &s;
 }
 
-bool WaylandServer::Start(const std::string& socketPath) {
+bool WaylandServer::Start(const std::string& socketPath, bool setProcessEnvironment) {
     if (running_) {
         OH_LOG_WARN(LOG_APP, "[WL] already running");
         return true;
@@ -61,7 +61,12 @@ bool WaylandServer::Start(const std::string& socketPath) {
     OH_LOG_INFO(LOG_APP, "[WL] mkdir(%{public}s) = %{public}d, errno=%{public}d",
                 dir.c_str(), rc, errno);
 
-    setenv("XDG_RUNTIME_DIR", dir.c_str(), 1);
+    // 环境变量注入 (阶段 1 P1.3): 默认沿用旧行为; false 时宿主经
+    // HgsInstance::ClientEnvironment() 显式传给子进程 (WineHua 的
+    // wine_env.cpp 已自组 XDG_RUNTIME_DIR/WAYLAND_DISPLAY, 不依赖本进程)
+    if (setProcessEnvironment) {
+        setenv("XDG_RUNTIME_DIR", dir.c_str(), 1);
+    }
 
     display_ = wl_display_create();
     if (!display_) {
@@ -77,7 +82,9 @@ bool WaylandServer::Start(const std::string& socketPath) {
     }
     OH_LOG_INFO(LOG_APP, "[WL] socket added: %{public}s", name.c_str());
 
-    setenv("WAYLAND_DISPLAY", name.c_str(), 1);
+    if (setProcessEnvironment) {
+        setenv("WAYLAND_DISPLAY", name.c_str(), 1);
+    }
 
     // 注册 global 对象 (核心协议实现已剥离到 wl_core.cpp)
     RegisterWlCoreGlobals(display_);

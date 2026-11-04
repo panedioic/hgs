@@ -102,10 +102,9 @@ bool HgsInstance::Start(const HgsConfig& config) {
     if (config.composition != CompositionMode::Unspecified) {
         ws->SetDesktopMode(config.composition == CompositionMode::DesktopRoot);
     }
-    // features/setProcessEnvironment 阶段 0 仅记录, 不改变注册行为
-    // (恒开协议与 setenv 现状不变, phase0 §9)。
-
-    const bool ok = ws->Start(config.socketPath);
+    // features 阶段 1 仍仅记录 (恒开协议不变); setProcessEnvironment 已生效:
+    // false = 不污染宿主进程全局环境, 宿主用 ClientEnvironment() 传子进程。
+    const bool ok = ws->Start(config.socketPath, config.setProcessEnvironment);
     if (!ok) impl->SetError("Start: WaylandServer::Start failed");
     return ok;
 }
