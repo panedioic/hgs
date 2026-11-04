@@ -34,6 +34,7 @@ struct HgsInstance::Impl {
     std::unordered_map<ToplevelId, std::pair<SurfaceToken, SurfaceGeneration>> surfaces;
     std::string lastError;                    // 失败写入, 成功不清空 (契约)
     std::string socketPath;                   // 最近一次 Start 的路径
+    HgsWindowManager windowManager;           // 阶段 2 W1: 独立 core (事件接线 W2)
 
     void SetError(const char* msg) {
         {
@@ -300,6 +301,10 @@ ToplevelId HgsInstance::TakePendingToplevel() {
 
 void HgsInstance::CancelPendingToplevel(ToplevelId id) {
     PluginManager::GetInstance()->CancelPendingToplevel(id);
+}
+
+HgsWindowManager& HgsInstance::WindowManager() {
+    return impl_->windowManager;
 }
 
 } // namespace hgs

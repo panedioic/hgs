@@ -10,3 +10,7 @@
 #include "hgs_host.h"
 #include "hgs_instance.h"
 #include "hgs_types.h"
+#include "hgs_window_host.h"
+#include "hgs_window_manager.h"
+#include "hgs_window_policy.h"
+#include "hgs_window_types.h"

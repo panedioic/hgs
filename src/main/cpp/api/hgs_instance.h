@@ -26,6 +26,7 @@
 #include "hgs_export.h"
 #include "hgs_host.h"
 #include "hgs_types.h"
+#include "hgs_window_manager.h"
 
 namespace hgs {
 
@@ -102,6 +103,10 @@ public:
     void SetPendingToplevel(ToplevelId id);
     ToplevelId TakePendingToplevel();             // 出队; 空 → 0 (= 现 getCurrentToplevelId)
     void CancelPendingToplevel(ToplevelId id);
+
+    // -- 窗口管理器 core (阶段 2 W1; 事件接线在 W2) --
+    // 独立实例, 不接管 policy/host 所有权 (宿主经 SetPolicy/SetHost 注入)。
+    HgsWindowManager& WindowManager();
 
 private:
     HgsInstance();

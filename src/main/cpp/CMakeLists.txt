@@ -35,6 +35,8 @@ add_library(hgs SHARED
     # api/*.h 零平台依赖; 实现文件是唯一允许依赖平台/现有单例的位置
     api/hgs_endpoint.cpp
     api/hgs_instance.cpp
+    api/hgs_window_policy.cpp
+    api/hgs_window_manager.cpp
 
     # ── 合成器域 ──
     compositor/wayland_server.cpp
