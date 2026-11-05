@@ -91,6 +91,7 @@ struct Ctx {
     int maximized;
     int running;
     int frames_done;
+    int pending_resize;  /* configure 给了新尺寸, 待 ack 后重绘 */
 
     /* 指针状态(表面坐标) */
     int entered;
@@ -320,21 +321,37 @@ static void frame_done(void* data, struct wl_callback* cb, uint32_t timestamp) {
 }
 static const struct wl_callback_listener kFrameListener = { frame_done };
 
+/* 立即按当前尺寸重绘并提交一帧, 同时重新挂上 frame callback。
+ * configure 改尺寸后必须走这里: 只 create_buffers 不 commit 的话, surface
+ * 仍挂着旧尺寸的 buffer, 合成器会把它拉伸铺满窗口 — 画面和命中区都错位。 */
+static void commit_redraw(struct Ctx* c) {
+    if (!c->px[0]) return;
+    render_frame(0);
+    wl_surface_attach(c->surf, c->buf[0], 0, 0);
+    wl_surface_damage(c->surf, 0, 0, c->w, c->h);
+    struct wl_callback* cb = wl_surface_frame(c->surf);
+    wl_callback_add_listener(cb, &kFrameListener, c);
+    wl_surface_commit(c->surf);
+}
+
 /* ── xdg_surface / xdg_toplevel ────────────────────────────────────────── */
 static void xsurf_configure(void* data, struct xdg_surface* xs, uint32_t serial) {
     struct Ctx* c = data;
     xdg_surface_ack_configure(xs, serial);
     if (!c->configured) {
         c->configured = 1;
+        c->pending_resize = 0;
         create_buffers();
         if (!c->px[0]) return;
-        render_frame(0);
-        wl_surface_attach(c->surf, c->buf[0], 0, 0);
-        wl_surface_damage(c->surf, 0, 0, c->w, c->h);
-        struct wl_callback* cb = wl_surface_frame(c->surf);
-        wl_callback_add_listener(cb, &kFrameListener, c);
-        wl_surface_commit(c->surf);
+        commit_redraw(c);
         fprintf(stderr, "wlsmoke: window up %dx%d\n", c->w, c->h);
+        fflush(stderr);
+    } else if (c->pending_resize) {
+        c->pending_resize = 0;
+        create_buffers();
+        commit_redraw(c);
+        c->frames_done = 0;  /* 让动画再走几帧, 保持视觉活性 */
+        fprintf(stderr, "wlsmoke: resized %dx%d\n", c->w, c->h);
         fflush(stderr);
     }
 }
@@ -352,7 +369,9 @@ static void top_configure(void* data, struct xdg_toplevel* top, int32_t w, int32
     if (w > 0 && h > 0 && (w != c->w || h != c->h)) {
         c->w = w;
         c->h = h;
-        if (c->configured) create_buffers();   /* 下一帧 callback 用新尺寸 */
+        /* 缓冲重分配 + 重绘留到 ack 之后 (xsurf_configure): 协议要求先
+         * ack_configure 才能按新尺寸提交 */
+        c->pending_resize = c->configured;
     }
 }
 static void top_close(void* data, struct xdg_toplevel* top) {
