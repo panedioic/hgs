@@ -12,6 +12,7 @@
 import { AbilityConstant, UIAbility, Want } from '@kit.AbilityKit';
 import { window } from '@kit.ArkUI';
 import { BusinessError } from '@kit.BasicServicesKit';
+import bundleManager from '@ohos.bundle.bundleManager';
 import hgs from 'libhgs.so';
 import { HgsWindowHostService } from '../service/HgsWindowHostService';
 
@@ -36,6 +37,41 @@ export default class HgsAppWindowAbility extends UIAbility {
   }
 
   async onWindowStageCreate(stage: window.WindowStage): Promise<void> {
+    const mainWin: window.Window = stage.getMainWindowSync();
+    // ── 显示前配置 (loadContent 之前): ──
+    // 1. 窗口模式 (可选): floatingOnly=true 时声明 FLOATING-only (stage API,
+    //    since 15/20), host 用几何方式自管最大化; 默认 false 走系统默认
+    //    模式 + 系统原生 maximize/restore (见 HgsWindowHostOptions 注释)
+    // 2. 预设窗口尺寸 (显示前 resize 生效; 显示后再 resize 会被迁移态吞掉)。
+    //    这一步同时压制系统的"记住全屏布局、显示时重新施加" — 真机验证
+    //    最大化会话后强停重启, 窗口仍以普通态打开
+    // 3. 隐藏 OHOS 系统标题栏 (显示后才可调, pre-show 报 1300002;
+    //    attachWindow 的重试路径也会再调一次)
+    if (HgsWindowHostService.getInstance().floatingOnly()) {
+      try {
+        await stage.setSupportedWindowModes(
+          [bundleManager.SupportWindowMode.FLOATING], true);
+      } catch (e) {
+        hgs.LOGW(`[${TAG}] setSupportedWindowModes: ${JSON.stringify(e)}`);
+      }
+    } else {
+      hgs.LOGI(`[${TAG}] floatingOnly=false — 系统默认窗口模式`);
+    }
+    const scale = HgsWindowHostService.getInstance().windowScale();
+    if (this.contentW > 0 && this.contentH > 0) {
+      try {
+        await mainWin.resize(Math.round(this.contentW * scale),
+                             Math.round(this.contentH * scale));
+        hgs.LOGI(`[${TAG}] pre-show resize ${this.contentW * scale}x${this.contentH * scale}`);
+      } catch (e) {
+        hgs.LOGW(`[${TAG}] pre-show resize failed: ${JSON.stringify(e)}`);
+      }
+    }
+    try {
+      mainWin.setWindowDecorVisible(false);
+    } catch (e) {
+      hgs.LOGW(`[${TAG}] setWindowDecorVisible(pre-show): ${JSON.stringify(e)}`);
+    }
     try {
       await stage.loadContent(HgsWindowHostService.getInstance().pageUrl(), null);
     } catch (e) {
@@ -45,7 +81,6 @@ export default class HgsAppWindowAbility extends UIAbility {
       return;
     }
     try {
-      const mainWin: window.Window = stage.getMainWindowSync();
       HgsWindowHostService.getInstance().attachWindow(
         this.toplevelId, mainWin, this.context);
     } catch (e) {

@@ -15,7 +15,7 @@
 //      — 封装 hgs.startServer, 默认 inputBackend=Native / PerToplevel /
 //      dataDevice=true (可用 options 覆盖)
 
-import { window } from '@kit.ArkUI';
+import { window, display } from '@kit.ArkUI';
 import { common, Want } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import hgs, { HgsStartConfig } from 'libhgs.so';
@@ -45,6 +45,18 @@ export interface HgsWindowHostOptions {
   abilityName?: string;   // 默认 'HgsAppWindowAbility'
   pageUrl?: string;       // 默认 'pages/HgsWindowPage' (宿主 main_pages.json 注册)
   windowScale?: number;   // 逻辑尺寸 → OHOS 窗口尺寸; 默认 1, BetterSH 可设 2
+  decorVisible?: boolean; // OHOS 系统标题栏可见性; 默认 false
+  /**
+   * 窗口模式选择。
+   * false (默认): 系统默认模式 + 系统原生 maximize/restore/setFullScreen —
+   *   有系统动画、支持真全屏 (游戏); "启动即最大化"由 pre-show resize 压制
+   *   (真机验证: 最大化会话后强停重启仍以普通态打开)。
+   * true: stage 声明 FLOATING-only, host 用几何方式 (moveTo+resize) 自管
+   *   最大化 — 几何完全确定, 但无系统动画、无法真全屏, 且要求 API 15/20
+   *   的 setSupportedWindowModes (不支持时回退系统默认, 此时几何最大化
+   *   会被 WMS 吞掉: max→restore→max 第三次失效, 真机实测)。
+   */
+  floatingOnly?: boolean;
 }
 
 // start() 的封装参数: 只暴露窗口 host 场景需要的字段, 其余走 startServer
@@ -100,6 +112,13 @@ interface WindowRecord {
   spec: WindowSpecLike | null;
   lastW: number;
   lastH: number;
+  state: number;     // 当前 HgsWindowState (最大化/全屏时几何由状态决定)
+  normalW: number;   // 最近一次 Normal 态的客户端内容宽 (逻辑 px)
+  normalH: number;
+  preMaxX: number;   // 最大化前的窗口左上角 (物理 px, 还原用)
+  preMaxY: number;
+  hasPreMax: boolean;
+  hasStateBeenMax: boolean;  // 系统模式下是否进过最大化 (Normal→restore 的依据)
 }
 
 export class HgsWindowHostService {
@@ -190,9 +209,19 @@ export class HgsWindowHostService {
     return this.options.pageUrl ?? 'pages/HgsWindowPage';
   }
 
-  private scale(): number {
+  /** 逻辑尺寸 → OHOS 窗口尺寸缩放 (HgsAppWindowAbility 显示前 resize 用) */
+  windowScale(): number {
     const s = this.options.windowScale ?? 1;
     return s > 0 ? s : 1;
+  }
+
+  /** 系统默认模式 (false) 或 FLOATING-only 几何自管 (true); 默认 false */
+  floatingOnly(): boolean {
+    return this.options.floatingOnly ?? false;
+  }
+
+  private scale(): number {
+    return this.windowScale();
   }
 
   /** HgsAppWindowAbility 在 getMainWindowSync 后调用, 注册实际 window 句柄。 */
@@ -201,11 +230,47 @@ export class HgsWindowHostService {
     rec.win = win;
     rec.ctx = ctx;
     if (rec.spec) {
-      this.applyTitle(rec, rec.spec.title);
-      this.applyGeometry(rec, rec.spec.width, rec.spec.height);
-      this.applyState(rec, rec.spec.state);
-      this.applyVisible(rec, rec.spec.visible);
+      rec.state = rec.spec.state;
+      if (rec.spec.state === ST_NORMAL) {
+        rec.normalW = rec.spec.width;
+        rec.normalH = rec.spec.height;
+      }
     }
+    const applyInitial = (): void => {
+      if (!rec.spec || !rec.win) return;
+      this.applyTitle(rec, rec.spec.title);
+      // 顺序红线: 先恢复 Normal 态再 resize — 系统会记住 Ability 上次的
+      // 最大化布局, 直接 resize 会被最大化态吞掉 (窗口"一开始就最大化")
+      this.applyState(rec, rec.state);
+      // 最大化/全屏时尺寸已由 applyState 定好; 再按 spec 内容尺寸 resize
+      // 会把窗口从整屏缩回去 (与几何事件同理)
+      if (rec.state === ST_NORMAL) {
+        this.applyGeometry(rec, rec.spec.width, rec.spec.height);
+      }
+      this.applyVisible(rec, rec.spec.visible);
+      // 隐藏 OHOS 系统标题栏 (wayland 客户端自绘装饰; API20+, 不支持则忽略)
+      try {
+        rec.win.setWindowDecorVisible(this.options.decorVisible ?? false);
+      } catch (e) {
+        hgs.LOGW(`[${TAG}] setWindowDecorVisible: ${JSON.stringify(e)}`);
+      }
+      try {
+        if (this.options.decorVisible) {
+          win.setWindowTitleButtonVisible(true, true, true);
+        } else {
+          win.setWindowTitleButtonVisible(false, false, false);
+        }
+      } catch (e) {
+        hgs.LOGW(`[${TAG}] setWindowTitleButtonVisible: ${JSON.stringify(e)}`);
+      }
+    };
+    applyInitial();
+    // 窗口刚 attach 时处于状态迁移期, title/resize/decor 可能报 1300002
+    // (window state abnormal) — 延迟重试一次 (applyGeometry 有 lastW/H 去重,
+    // 重复调用不会形成反馈环)
+    setTimeout((): void => {
+      applyInitial();
+    }, 300);
     hgs.LOGI(`[${TAG}] attach tl=${toplevelId} win=${win.getWindowProperties().id}`);
   }
 
@@ -221,7 +286,11 @@ export class HgsWindowHostService {
   private ensure(id: number): WindowRecord {
     let rec = this.windows.get(id);
     if (!rec) {
-      rec = { win: null, ctx: null, spec: null, lastW: 0, lastH: 0 };
+      rec = {
+        win: null, ctx: null, spec: null, lastW: 0, lastH: 0,
+        state: ST_NORMAL, normalW: 0, normalH: 0,
+        preMaxX: 0, preMaxY: 0, hasPreMax: false, hasStateBeenMax: false,
+      };
       this.windows.set(id, rec);
     }
     return rec;
@@ -255,11 +324,18 @@ export class HgsWindowHostService {
             rec.spec.width = ev.geometry.width;
             rec.spec.height = ev.geometry.height;
           }
+          // 最大化/全屏时窗口尺寸由状态决定: 客户端收到 configure 后的内容
+          // 尺寸只改变渲染拉伸; 若照它 resize, 最大化会被缩到 configure 尺寸
+          // (实测 2880x1920 → 2560x1440), 还原又变成"点了没反应"
+          if (rec.state === ST_MAXIMIZED || rec.state === ST_FULLSCREEN) break;
+          rec.normalW = ev.geometry.width;
+          rec.normalH = ev.geometry.height;
           this.applyGeometry(rec, ev.geometry.width, ev.geometry.height);
         }
         break;
       case EV_STATE_CHANGED:
         if (rec) {
+          rec.state = ev.state;
           if (rec.spec) rec.spec.state = ev.state;
           this.applyState(rec, ev.state);
         }
@@ -346,19 +422,68 @@ export class HgsWindowHostService {
     const w = Math.max(1, Math.round(width * this.scale()));
     const h = Math.max(1, Math.round(height * this.scale()));
     if (w === rec.lastW && h === rec.lastH) return;  // 去重, 防反馈环
-    rec.lastW = w;
-    rec.lastH = h;
-    rec.win.resize(w, h).catch((e: BusinessError) => {
+    rec.win.resize(w, h).then((): void => {
+      // 成功才记录 — 失败 (如窗口迁移期 1300002) 留待重试再发
+      rec.lastW = w;
+      rec.lastH = h;
+    }).catch((e: BusinessError) => {
+      rec.lastW = 0;
+      rec.lastH = 0;
       hgs.LOGW(`[${TAG}] resize: ${JSON.stringify(e)}`);
     });
   }
 
   private applyState(rec: WindowRecord, state: number): void {
     if (!rec.win) return;
-    if (state === ST_MAXIMIZED) {
+    // floatingOnly=false → 走系统原生 maximize/restore (WMS 全权管理几何,
+    // 有系统动画; 配套要求 floatingOnly=false 时 pre-show resize 管启动尺寸)
+    if (!this.floatingOnly() && state === ST_MAXIMIZED) {
+      rec.hasStateBeenMax = true;
       rec.win.maximize().catch((e: BusinessError) => {
         hgs.LOGW(`[${TAG}] maximize: ${JSON.stringify(e)}`);
       });
+      return;
+    }
+    if (!this.floatingOnly() && state === ST_NORMAL && rec.hasStateBeenMax) {
+      rec.win.restore().catch((e: BusinessError) => {
+        hgs.LOGW(`[${TAG}] restore: ${JSON.stringify(e)}`);
+      });
+      return;
+    }
+    if (state === ST_MAXIMIZED) {
+      // 几何最大化: 移到原点 + resize 到整屏 (物理 px)。不用 win.maximize() —
+      // floating-only 模式下系统可能拒绝, 且其状态机 max→restore→max 第三次
+      // 会失效; 几何方式确定性成立, 客户端经 configure 同步新尺寸
+      try {
+        // 记下最大化前的窗口矩形, 还原时回到原位 (moveTo(0,0) 会把它改掉)。
+        // hasPreMax 防重入: attach 后的延迟重试再走一遍时不能把已最大化的
+        // 矩形当成"原位"
+        if (!rec.hasPreMax) {
+          const r = rec.win.getWindowProperties().windowRect;
+          rec.preMaxX = r.left;
+          rec.preMaxY = r.top;
+          rec.hasPreMax = true;
+        }
+      } catch (e) {
+        hgs.LOGW(`[${TAG}] read rect before maximize: ${JSON.stringify(e)}`);
+      }
+      try {
+        const d = display.getDefaultDisplaySync();
+        rec.win.moveTo(0, 0).catch((e: BusinessError) => {
+          hgs.LOGW(`[${TAG}] moveTo(0,0): ${JSON.stringify(e)}`);
+        });
+        rec.win.resize(d.width, d.height).then((): void => {
+          rec.lastW = d.width;
+          rec.lastH = d.height;
+        }).catch((e: BusinessError) => {
+          // 失败不记 lastW/H — 留待几何事件或重试再发
+          rec.lastW = 0;
+          rec.lastH = 0;
+          hgs.LOGW(`[${TAG}] maximize resize: ${JSON.stringify(e)}`);
+        });
+      } catch (e) {
+        hgs.LOGW(`[${TAG}] maximize: ${JSON.stringify(e)}`);
+      }
     } else if (state === ST_MINIMIZED) {
       rec.win.minimize().catch((e: BusinessError) => {
         hgs.LOGW(`[${TAG}] minimize: ${JSON.stringify(e)}`);
@@ -368,11 +493,17 @@ export class HgsWindowHostService {
         hgs.LOGW(`[${TAG}] setFullScreen: ${JSON.stringify(e)}`);
       });
     } else {
-      // Normal: 退出全屏 + 还原
-      rec.win.setFullScreen(false).catch((): void => { /* ignore */ });
-      rec.win.restore().catch((e: BusinessError) => {
-        hgs.LOGW(`[${TAG}] restore: ${JSON.stringify(e)}`);
-      });
+      // Normal: 回到最大化前的位置 + 最近一次 Normal 内容尺寸
+      // (spec.width/height 已被最大化期间的 configure 尺寸污染, 不能用)
+      if (rec.hasPreMax) {
+        rec.win.moveTo(rec.preMaxX, rec.preMaxY).catch((e: BusinessError) => {
+          hgs.LOGW(`[${TAG}] restore moveTo: ${JSON.stringify(e)}`);
+        });
+        rec.hasPreMax = false;
+      }
+      const w = rec.normalW > 0 ? rec.normalW : (rec.spec?.width ?? 0);
+      const h = rec.normalH > 0 ? rec.normalH : (rec.spec?.height ?? 0);
+      this.applyGeometry(rec, w, h);
     }
   }
 
