@@ -9,6 +9,9 @@
 #include "compositor/frame/debug_assert.h"
 #include "seam/host_hooks.h"
 #include "protocols/xdg-shell-server-protocol.h"
+#include "protocols/wayland-server-protocol.h"  // HgsRegisterDataDeviceManager (data_device_stub.cpp)
+
+extern "C" void HgsRegisterDataDeviceManager(struct wl_display* display);
 #include <algorithm>
 #include <cstring>
 #include <cstdlib>
@@ -92,6 +95,10 @@ bool WaylandServer::Start(const std::string& socketPath, bool setProcessEnvironm
     RegisterXdgShell(display_);
     RegisterWinehuaToplevel(display_);
     Seat::GetInstance()->Register(display_);
+    // GDK gate 解除: GTK 的 wayland 后端要求 registry 里有
+    // wl_data_device_manager 才初始化 seat (否则 get_pointer 永远不被调用,
+    // 指针/键盘输入全部静默丢失)。完整剪贴板仍是 P1.4, 此处是 stub。
+    HgsRegisterDataDeviceManager(display_);
     // 装配注入 (重构第 6A 步): 输入编排层直接引用子组件 (tmgr/resolver/
     // moveGrab/policy/rootId), 替代 WaylandServer 到业务的转发调用 —
     // 装配在 wl 事件循环启动前 (与 4C1 warpSink 同模式: 之后回调仅在
@@ -144,11 +151,19 @@ void WaylandServer::EventLoop() {
         }
         wl_display_flush_clients(display_);  // dispatch 可能写数据, 之后 flush
 
-        // 每 30 秒输出一次资源快照 (50ms * 600 = 30s)
-        if (++tick % 600 == 0) {
-            size_t renderers = PluginManager::GetInstance()->GetRendererCount();
-            OH_LOG_INFO(LOG_APP, "[WL-STAT] toplevels=%{public}zu surfaces=%{public}zu renderers=%{public}zu",
-                        toplevelMgr_.ToplevelResourceCount(), toplevelMgr_.ToplevelSurfaceCount(), renderers);
+        // 每 30 秒输出一次资源快照。按 dispatch 迭代计数会在高事件率下变成
+        // 每 130ms 一行 (GTK 动画 120fps 每帧一次 dispatch) → 刷爆 hilog 且
+        // 把别的日志挤出环形缓冲。改用真实墙钟间隔。
+        {
+            static int64_t lastStatMs = 0;
+            int64_t nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count();
+            if (nowMs - lastStatMs >= 30000) {
+                lastStatMs = nowMs;
+                size_t renderers = PluginManager::GetInstance()->GetRendererCount();
+                OH_LOG_INFO(LOG_APP, "[WL-STAT] toplevels=%{public}zu surfaces=%{public}zu renderers=%{public}zu",
+                            toplevelMgr_.ToplevelResourceCount(), toplevelMgr_.ToplevelSurfaceCount(), renderers);
+            }
         }
     }
 }

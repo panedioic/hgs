@@ -40,6 +40,7 @@ add_library(hgs SHARED
     # ── 合成器域 ──
     compositor/wayland_server.cpp
     compositor/wl_core.cpp
+    compositor/data_device_stub.cpp
     compositor/frame/compositor_blit.cpp
     compositor/toplevel/toplevel_manager.cpp
     compositor/toplevel/popup_manager.cpp
