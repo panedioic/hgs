@@ -14,3 +14,9 @@ oh-package-lock.json5
 /thirdparty/*
 # wayland-smoke 是项目源码 (Wayland 冒烟客户端), 不是上游下载 — 白名单入库
 !/thirdparty/wayland-smoke
+# gtk-smoke 是项目源码 (GTK3 冒烟客户端), 不是上游下载 — 白名单入库
+!/thirdparty/gtk-smoke
+
+# 运行期资源 tar (scripts/pack_xkb_data.sh / pack_font.sh 产物, 可再生):
+# 体积 ~20MB, 不入库。需要随 HAR 分发时先跑这两个脚本再 --force 添加。
+/src/main/resources/rawfile/tools/*.tar
