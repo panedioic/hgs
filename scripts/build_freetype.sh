@@ -56,6 +56,15 @@ ln -sf libfreetype.so.6 "$SYSROOT_EXT_LIB/libfreetype.so"
 rm -rf "$SYSROOT_EXT_INC/freetype2"
 cp -r "$FT_BUILD/install/include/freetype2" "$SYSROOT_EXT_INC/"
 
+# freetype2.pc 的 Version 必须是 **libtool 版本**（官方 pc 就这么写）:
+# fontconfig/pango 等下游按 `freetype2 >= 21.0.15` 这类 libtool 号探测, 写成
+# 发布号(2.13.3)会被判成"版本太低"直接拒绝（fontconfig configure 报
+# "Package 'freetype2' has version '2.13.3', required version is '>= 21.0.15'"）。
+# libtool 号藏在源码 builds/unix/configure.raw 的 version_info='26:2:20'。
+FT_VER_INFO="$(sed -n "s/^version_info='\([0-9]*\):\([0-9]*\):\([0-9]*\)'.*/\1.\2.\3/p" \
+    "$FREETYPE_SRC/builds/unix/configure.raw" 2>/dev/null | head -1)"
+[ -n "$FT_VER_INFO" ] || FT_VER_INFO="$FREETYPE_VERSION"
+
 cat > "$SYSROOT_EXT_PC/freetype2.pc" << EOF
 prefix=$SYSROOT_EXT/usr
 includedir=\${prefix}/include
@@ -63,7 +72,7 @@ libdir=\${prefix}/lib/$TARGET
 
 Name: FreeType 2
 Description: A free, high-quality, and portable font engine.
-Version: $FREETYPE_VERSION
+Version: $FT_VER_INFO
 Libs: -L\${libdir} -lfreetype
 Cflags: -I\${includedir}/freetype2
 EOF
