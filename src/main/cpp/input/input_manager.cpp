@@ -9,6 +9,7 @@
 // 6A 装配注入直调 (BindCompositorDeps 注入引用; 见 input_manager.h 注释):
 #include "compositor/input/input_resolver.h"   // FindInputTargetAt/SurfaceLocalToDesktop/IsSurfaceAlive(经 injector)
 #include "compositor/toplevel/toplevel_manager.h" // GetSurfaceForToplevel/GetToplevelGeometrySnapshot
+#include "compositor/frame/surface_data.h"        // committed.contentRect (CSD 偏移)
 #include "compositor/toplevel/move_grab.h"        // IsActive/GetToplevelId
 #include <chrono>
 #include <thread>
@@ -217,11 +218,9 @@ void InputManager::SendPointerEvent(uint32_t tl, int action, double px, double p
                                     double rawDx, double rawDy, bool fromMouse) {
     // 窗口不可见时抑制输入
     if (tracker_.IsInputSuppressed(tl)) {
-        // 抽样 120:1: 窗口不可见时 hover 移动也会走到这里 (125Hz 全量会
-        // 刷屏); 只保留采样行确认"输入被抑制"这一状态
-        static uint32_t sSuppressN = 0;
-        if (++sSuppressN % 120 == 1)
-            OH_LOG_INFO(LOG_APP, "[Input] SUPPRESS tl=%{public}u action=%{public}d (window invisible)", tl, action);
+        // 诊断期: 每条都打 (之前 120:1 抽样导致偶发点击被吞却看不到日志;
+        // 根因修复 visible 状态后可再改回抽样)
+        OH_LOG_WARN(LOG_APP, "[Input] SUPPRESS tl=%{public}u action=%{public}d (window invisible)", tl, action);
         return;
     }
 
@@ -233,8 +232,15 @@ void InputManager::SendPointerEvent(uint32_t tl, int action, double px, double p
     const int ACT_RELEASE = 2;
     const int ACT_MOVE    = 3;
 
-    // 无 pointer resource 时所有事件跳过
-    if (!seat->HasPointerResource()) return;
+    // 无 pointer resource 时所有事件跳过 (诊断: 静默吞掉会让人以为触摸
+    // 没到 XComponent — 实际是客户端没 get_pointer / 已销毁)
+    if (!seat->HasPointerResource()) {
+        static uint32_t sNoPtrN = 0;
+        if (++sNoPtrN % 120 == 1)
+            OH_LOG_WARN(LOG_APP, "[Input] DROP (无 wl_pointer resource) tl=%{public}u action=%{public}d",
+                        tl, action);
+        return;
+    }
 
     // 坐标转换
     wl_fixed_t wx, wy;
@@ -338,6 +344,22 @@ void InputManager::SendPointerEvent(uint32_t tl, int action, double px, double p
         if (lb.srcW > 0 && lb.srcH > 0) {
             wx = wl_fixed_from_double(ClampToContent(wl_fixed_to_double(wx), lb.srcW));
             wy = wl_fixed_from_double(ClampToContent(wl_fixed_to_double(wy), lb.srcH));
+        }
+        // CSD 内容偏移 (xdg window_geometry x/y): CoordTransform 的 local 是
+        // **内容坐标** (letterbox 锚 contentW/H, 如 GTK 的 480x407), 而 Wayland
+        // 指针事件要 **surface 坐标** (buffer 系, 如 532x459, 内容带 shadow
+        // 内边距从 (26,23) 开始)。加回偏移, 否则 GTK 的 widget 命中整体错位
+        // (注入坐标落在 shadow 区 → 丢点击)。PerToplevel 模式专属: Desktop
+        // 模式该值是屏幕位置义, 不能加。
+        if (!policy_->RootCompositing()) {
+            wl_resource* surf = tmgr_->GetSurfaceForToplevel(tl);
+            if (surf) {
+                auto* sd = static_cast<SurfaceData*>(wl_resource_get_user_data(surf));
+                if (sd && sd->committed.hasWindowGeometry) {
+                    wx = wl_fixed_from_double(wl_fixed_to_double(wx) + sd->committed.contentRect.x);
+                    wy = wl_fixed_from_double(wl_fixed_to_double(wy) + sd->committed.contentRect.y);
+                }
+            }
         }
         // PC 空间全局指针位置 = 窗口局部坐标 + 窗口位置 (grab 偏移基准)。
         // 4C1: 显式语义为 Window 空间 (窗口局部+窗口位置还原值)
@@ -680,6 +702,17 @@ void InputManager::SendScrollEvent(uint32_t tl, int axis, double value, int scro
         if (lb.srcW > 0 && lb.srcH > 0) {
             wx = wl_fixed_from_double(ClampToContent(wl_fixed_to_double(wx), lb.srcW));
             wy = wl_fixed_from_double(ClampToContent(wl_fixed_to_double(wy), lb.srcH));
+        }
+        // CSD 内容偏移 (同 SendPointerEvent PC 分支): 内容坐标 → surface 坐标
+        if (!policy_->RootCompositing()) {
+            wl_resource* surf = tmgr_->GetSurfaceForToplevel(tl);
+            if (surf) {
+                auto* sd = static_cast<SurfaceData*>(wl_resource_get_user_data(surf));
+                if (sd && sd->committed.hasWindowGeometry) {
+                    wx = wl_fixed_from_double(wl_fixed_to_double(wx) + sd->committed.contentRect.x);
+                    wy = wl_fixed_from_double(wl_fixed_to_double(wy) + sd->committed.contentRect.y);
+                }
+            }
         }
         // 缺段修复: PC 空间全局指针位置 = 窗口局部 + 窗口位置 (grab 偏移基准,
         // 与 SendPointerEvent PC 分支同款); 4C1 显式语义 Window 空间

@@ -3,6 +3,7 @@
 #include "desktop_compositor.h"
 #include "geometry.h"
 #include "compositor/frame/surface_data.h"
+#include "compositor/frame/display_policy.h"
 #include <algorithm>
 #include <hilog/log.h>
 
@@ -13,12 +14,14 @@
 
 InputResolver::InputResolver(ToplevelManager& tmgr, DesktopCompositor& compositor,
                              const uint32_t& desktopRootToplevelId,
-                             const int32_t& outputW, const int32_t& outputH)
+                             const int32_t& outputW, const int32_t& outputH,
+                             const DisplayPolicy& policy)
     : tmgr_(tmgr)
     , compositor_(compositor)
     , desktopRootToplevelId_(desktopRootToplevelId)
     , outputW_(outputW)
     , outputH_(outputH)
+    , policy_(policy)
 {
 }
 
@@ -220,6 +223,19 @@ bool InputResolver::FindInputTargetAt(double logicalX, double logicalY, InputTar
                 out.originX = layer.x;
                 out.originY = layer.y;
                 out.scale = 1.0;
+                // CSD 内容偏移 (xdg window_geometry x/y): 客户端 buffer 里带
+                // 阴影内边距 (GTK 实测 (26,23)), 渲染只 blit 内容子矩形 →
+                // 窗口坐标 (0,0) 对应 surface (26,23)。注入坐标必须加回偏移,
+                // 否则 GTK 的 widget 命中整体错位 (点击全部落进阴影 → 丢点击)。
+                // 实现走 origin 反向扣 (local = (d-origin)/scale → d-origin+off)。
+                // Desktop 模式该值是屏幕位置义且已含在 layer.x/y 里, 不扣。
+                if (policy_.OhosWindowPerToplevel() && surf) {
+                    auto* sd = static_cast<SurfaceData*>(wl_resource_get_user_data(surf));
+                    if (sd && sd->committed.hasWindowGeometry) {
+                        out.originX -= sd->committed.contentRect.x;
+                        out.originY -= sd->committed.contentRect.y;
+                    }
+                }
                 // WineHua: 命中被模态禁用的 owner → 拦截 (吞点击+焦点切 modal)
                 out.blockedModalId = layer.toplevelId != rootId
                     ? tmgr_.FirstVisibleModalLocked(layer.toplevelId, desktopRootToplevelId_)

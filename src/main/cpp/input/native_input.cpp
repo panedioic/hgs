@@ -65,6 +65,7 @@ void LogCalibrationOnce(OH_NativeXComponent* comp, void* window, Binding& b,
                         float screenX, float screenY) {
     if (b.calibrationLogged) return;
     b.calibrationLogged = true;
+    Update(comp, b);   // 写回 (b 是 Snapshot 的副本, 不写回则去重失效)
     uint64_t w = 0, h = 0;
     OH_NativeXComponent_GetXComponentSize(comp, window, &w, &h);
     OH_LOG_INFO(LOG_APP,
@@ -77,9 +78,18 @@ void LogCalibrationOnce(OH_NativeXComponent* comp, void* window, Binding& b,
 
 // ── mouse callback ─────────────────────────────────────────────────────────
 void DispatchMouseEvent(OH_NativeXComponent* comp, void* window) {
-    if (!comp || !window || !Enabled()) return;
+    if (!comp || !window || !Enabled()) {
+        OH_LOG_WARN(LOG_APP, "[NAPI-INPUT] mouse drop: comp=%{public}p enabled=%{public}d",
+                    static_cast<void*>(comp),
+                    comp && window ? (Enabled() ? 1 : 0) : -1);
+        return;
+    }
     Binding b = Snapshot(comp);
-    if (b.toplevelId == 0) return;
+    if (b.toplevelId == 0) {
+        OH_LOG_WARN(LOG_APP, "[NAPI-INPUT] mouse drop: 未绑定 toplevel (comp=%{public}p)",
+                    static_cast<void*>(comp));
+        return;
+    }
 
     OH_NativeXComponent_MouseEvent ev;
     if (OH_NativeXComponent_GetMouseEvent(comp, window, &ev) !=
@@ -223,15 +233,19 @@ void Bind(OH_NativeXComponent* comp, ToplevelId toplevelId) {
 
     // touch 由 egl_surface 的 OH_NativeXComponent_Callback.DispatchTouchEvent 承担,
     // 本函数只注册 mouse/key/axis/focus/blur (不覆盖 surface 回调结构体)。
-    OH_NativeXComponent_RegisterMouseEventCallback(comp, &gMouseCb);
-    OH_NativeXComponent_RegisterKeyEventCallback(comp, DispatchKeyEvent);
-    OH_NativeXComponent_RegisterFocusEventCallback(comp, DispatchFocusEvent);
-    OH_NativeXComponent_RegisterBlurEventCallback(comp, DispatchBlurEvent);
-    const int32_t rc = OH_NativeXComponent_RegisterUIInputEventCallback(
+    const int32_t mouseRc = OH_NativeXComponent_RegisterMouseEventCallback(comp, &gMouseCb);
+    const int32_t keyRc = OH_NativeXComponent_RegisterKeyEventCallback(comp, DispatchKeyEvent);
+    const int32_t focusRc = OH_NativeXComponent_RegisterFocusEventCallback(comp, DispatchFocusEvent);
+    const int32_t blurRc = OH_NativeXComponent_RegisterBlurEventCallback(comp, DispatchBlurEvent);
+    const int32_t axisRc = OH_NativeXComponent_RegisterUIInputEventCallback(
         comp, DispatchAxisEvent, ARKUI_UIINPUTEVENT_TYPE_AXIS);
+    // rc=0 才算注册成功; 非 0 的项触摸/mouse 回调可能根本不会被调 (真机排查:
+    // XComponent 收到 down 但 DispatchTouchEvent 静默, 先看这里)
     OH_LOG_INFO(LOG_APP,
-                "[NAPI-INPUT] bind comp=%{public}p tl=%{public}u axisRc=%{public}d",
-                static_cast<void*>(comp), toplevelId, rc);
+                "[NAPI-INPUT] bind comp=%{public}p tl=%{public}u "
+                "mouseRc=%{public}d keyRc=%{public}d focusRc=%{public}d blurRc=%{public}d axisRc=%{public}d",
+                static_cast<void*>(comp), toplevelId,
+                mouseRc, keyRc, focusRc, blurRc, axisRc);
 }
 
 void Unbind(OH_NativeXComponent* comp) {
@@ -241,9 +255,15 @@ void Unbind(OH_NativeXComponent* comp) {
 }
 
 void DispatchTouchEvent(OH_NativeXComponent* comp, void* window) {
-    if (!comp || !window || !Enabled()) return;
+    if (!comp || !window || !Enabled()) {
+        return;
+    }
     Binding b = Snapshot(comp);
-    if (b.toplevelId == 0) return;
+    if (b.toplevelId == 0) {
+        OH_LOG_WARN(LOG_APP, "[NAPI-INPUT] touch drop: 未绑定 toplevel (comp=%{public}p)",
+                    static_cast<void*>(comp));
+        return;
+    }
 
     OH_NativeXComponent_TouchEvent ev;
     if (OH_NativeXComponent_GetTouchEvent(comp, window, &ev) !=

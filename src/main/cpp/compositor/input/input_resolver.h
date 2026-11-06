@@ -4,6 +4,7 @@
 
 class ToplevelManager;
 class DesktopCompositor;
+struct DisplayPolicy;
 
 // 输入命中终态 (原 WaylandServer 嵌套类型, 外部调用方通过 wayland_server.h 的 using 别名继续使用)
 //
@@ -54,7 +55,8 @@ class InputResolver {
 public:
     InputResolver(ToplevelManager& tmgr, DesktopCompositor& compositor,
                   const uint32_t& desktopRootToplevelId,
-                  const int32_t& outputW, const int32_t& outputH);
+                  const int32_t& outputW, const int32_t& outputH,
+                  const DisplayPolicy& policy);
 
     // Desktop 模式: 桌面逻辑坐标 (lx,ly) 处的精确输入目标, 一次性产出
     // 终态 (surface + 可注入局部坐标 localX/localY + swallow 动作指示)。
@@ -88,4 +90,7 @@ private:
     const uint32_t& desktopRootToplevelId_;
     const int32_t& outputW_;
     const int32_t& outputH_;
+    // 合成模式 (Desktop=RootCompositing / PerToplevel): 决定 window_geometry
+    // x/y 的语义分流 (Desktop=屏幕位置 / PerToplevel=CSD buffer 内偏移)
+    const DisplayPolicy& policy_;
 };

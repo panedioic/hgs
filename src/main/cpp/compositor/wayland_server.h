@@ -338,7 +338,8 @@ private:
     // 输入命中裁决 — 已移入 InputResolver (同上)
     InputResolver inputResolver_{toplevelMgr_, desktopCompositor_,
                                   session_.desktopRootToplevelId,
-                                  session_.outputW, session_.outputH};
+                                  session_.outputW, session_.outputH,
+                                  session_.policy};
     // PC 模式 popup 登记/裁剪/状态管理 — 已移入 PopupManager (重构第 5B2 步;
     // popup 表从 ToplevelManager 迁入, 锁域不变 — tmgr 锁守护, 见 popup_manager.h)
     PopupManager popupMgr_{toplevelMgr_};
