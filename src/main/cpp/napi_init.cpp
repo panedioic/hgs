@@ -49,6 +49,66 @@ static napi_value DumpWindowLayout(napi_env env, napi_callback_info info) {
     return nullptr;
 }
 
+// ── XComponent 回调的延迟注册 ────────────────────────────────────────────
+// napi register 函数在 JS 首次 import libhgs.so 时只跑一次, 那时 ArkUI 通常
+// 还没创建 XComponent → unwrap 失败 → OH_NativeXComponent 回调永远没注册
+// (实测: 多窗口里第二个窗口起, native mouse/touch 全部静默)。
+// 修法: 记住 env/exports, HgsSurface.onLoad → bindXComponent 时重试 unwrap
+// (此时 ArkUI 已把 OH_NativeXComponent 挂到 exports 上)。
+static napi_env gXcEnv = nullptr;
+static napi_ref gXcExportsRef = nullptr;
+static bool gXcRegistered = false;
+
+// 返回 true = 已注册 (或早已注册); false = unwrap 仍失败 (XComponent 未创建)
+bool RetryXComponentRegister()
+{
+    if (gXcRegistered || gXcEnv == nullptr || gXcExportsRef == nullptr) return gXcRegistered;
+    napi_value exports = nullptr;
+    if (napi_get_reference_value(gXcEnv, gXcExportsRef, &exports) != napi_ok || !exports) {
+        return false;
+    }
+    napi_value xc = nullptr;
+    if (napi_get_named_property(gXcEnv, exports, OH_NATIVE_XCOMPONENT_OBJ, &xc) != napi_ok) {
+        return false;
+    }
+    OH_NativeXComponent* nx = nullptr;
+    if (napi_unwrap(gXcEnv, xc, reinterpret_cast<void**>(&nx)) != napi_ok || nx == nullptr) {
+        return false;
+    }
+    OH_NativeXComponent_RegisterCallback(nx, &hgs::surface::gXcompCb);
+    char idBuf[128] = {0};
+    uint64_t idLen = sizeof(idBuf);
+    OH_NativeXComponent_GetXComponentId(nx, idBuf, &idLen);
+    OH_LOG_INFO(LOG_APP, "[HGS-NAPI] XComponent callbacks registered (deferred) id=%{public}s comp=%{public}p",
+                idBuf, static_cast<void*>(nx));
+    gXcRegistered = true;
+    return true;
+}
+
+// NAPI: hgs.regXComponentCallback() — HgsSurface.onLoad 调, 重试注册。
+// 进程内只有一个 ArkTS VM, register 时存的 env/exports 即 XComponent 所在的
+// env; ArkUI 在创建 XComponent 时才把原生对象挂上 exports (import 时还没有),
+// 所以 onLoad 时刻重试 unwrap 就能拿到并注册回调。
+napi_value RegXComponentCallbackNAPI(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value argv[1];
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    // 可选参数 force: 传 true 时无视已注册标记再试一次 (多 XComponent 场景:
+    // 第二个 XComponent 的注册也要走 unwrap, 不能被第一个的 registered 挡住)
+    bool force = false;
+    if (argc >= 1) {
+        napi_get_value_bool(env, argv[0], &force);
+    }
+    if (force) gXcRegistered = false;
+    bool ok = RetryXComponentRegister();
+    if (!ok) {
+        OH_LOG_WARN(LOG_APP, "[HGS-NAPI] regXComponentCallback: 重试仍失败 (XComponent 未创建?)");
+    }
+    napi_value res = nullptr;
+    napi_get_boolean(env, ok, &res);
+    return res;
+}
+
 EXTERN_C_START
 static napi_value Init(napi_env env, napi_value exports) {
     const napi_property_descriptor desc[] = {
@@ -138,24 +198,24 @@ static napi_value Init(napi_env env, napi_value exports) {
         {"LOGI",                        nullptr, logger::logiNAPI,                  nullptr, nullptr, nullptr, napi_default, nullptr },
         {"LOGW",                        nullptr, logger::logwNAPI,                  nullptr, nullptr, nullptr, napi_default, nullptr },
         {"LOGE",                        nullptr, logger::logeNAPI,                  nullptr, nullptr, nullptr, napi_default, nullptr },
+        {"regXComponentCallback",       nullptr, RegXComponentCallbackNAPI,         nullptr, nullptr, nullptr, napi_default, nullptr },
         // 诊断工具
         {"dumpWindowLayout",            nullptr, DumpWindowLayout,                  nullptr, nullptr, nullptr, napi_default, nullptr },
 
     };
     napi_define_properties(env, exports, sizeof(desc) / sizeof(desc[0]), desc);
 
-    // XComponent(libraryname:'hgs') 触发的加载: exports 携带原生对象
-    napi_value xc;
-    if (napi_get_named_property(env, exports, OH_NATIVE_XCOMPONENT_OBJ, &xc) == napi_ok) {
-        OH_NativeXComponent *nx = nullptr;
-        if (napi_unwrap(env, xc, reinterpret_cast<void **>(&nx)) == napi_ok && nx != nullptr) {
-            OH_NativeXComponent_RegisterCallback(nx, &hgs::surface::gXcompCb);
-            char idBuf[128] = {0};
-            uint64_t idLen = sizeof(idBuf);
-            OH_NativeXComponent_GetXComponentId(nx, idBuf, &idLen);
-            OH_LOG_INFO(LOG_APP, "[HGS-NAPI] XComponent callbacks registered id=%{public}s", idBuf);
-        }
-    }
+    // XComponent(libraryname:'hgs') 触发的加载: exports 携带原生对象。
+    // 注意: 本注册函数每个**进程**只跑一次 (JS 首次 import libhgs.so);
+    // 多窗口 (AppRunnerAbility multiton 同进程/异进程) 时后续 XComponent
+    // 靠 ArkUI 的 napi 对象创建回调再次触发本函数 —— 无论哪种路径都要有日志,
+    // 排查"窗口进程回调没注册"时先看这行出没出现。
+    OH_LOG_INFO(LOG_APP, "[HGS-NAPI] module register func enter");
+    // 记住 env/exports; 此刻 XComponent 多半还没创建 (unwrap 会失败),
+    // 真正的注册在 HgsSurface.onLoad → regXComponentCallback/bindXComponent 重试
+    gXcEnv = env;
+    napi_create_reference(env, exports, 0, &gXcExportsRef);
+    RetryXComponentRegister();
     return exports;
 }
 EXTERN_C_END

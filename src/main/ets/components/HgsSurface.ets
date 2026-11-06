@@ -720,6 +720,15 @@ export struct HgsSurface {
             // 见 graphics/egl_surface.cpp 注释); id 由 native 回调认领 surface
             const id = this.resolveId ? this.resolveId() : this.toplevelId;
             hgs.LOGI(`[${this.tag}] onLoad bindXComponent id=${id}`);
+            // 先重试 OH_NativeXComponent 回调注册: napi register 函数在 import
+            // 时就跑完了, 那时 XComponent 还没创建 (unwrap 失败), ArkUI 创建
+            // XComponent 后才把原生对象挂上 exports —— onLoad 时刻重试才拿得到
+            try {
+              const ok = hgs.regXComponentCallback(true);
+              hgs.LOGI(`[${this.tag}] regXComponentCallback=${ok}`);
+            } catch (e) {
+              // 旧版 libhgs 无此导出, 忽略
+            }
             if (id > 0) {
               hgs.bindXComponent(id);
             }

@@ -53,6 +53,12 @@ export interface HgsStartConfig {
 // (W2b 改签名: 旧 (xcomp, toplevelId?) 依赖 onLoad 事件 napi_unwrap,
 //  本 SDK 实测 unwrap failed — 见 graphics/egl_surface.cpp 注释)
 export const bindXComponent: (toplevelId: number) => void;
+/**
+ * 重试 OH_NativeXComponent 回调注册 (napi register 函数只在 import 时跑一次,
+ * 那时 XComponent 还没创建; onLoad 时刻重试 unwrap 才能拿到原生对象)。
+ * HgsSurface.onLoad 自动调用; 返回 true = 已注册。
+ */
+export const regXComponentCallback: (force?: boolean) => boolean;
 
 // attachSurface 返回 generation (0 = 失败) — 后续 resize/detach 回传以
 // 防旧窗口事件误杀新 renderer; 传 0 = 通配 (兼容旧调用)。
