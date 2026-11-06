@@ -76,6 +76,9 @@ bool RetryXComponentRegister()
         return false;
     }
     OH_NativeXComponent_RegisterCallback(nx, &hgs::surface::gXcompCb);
+    // 记下"当前窗口的组件": 多窗口时 bindXComponent 靠它绑输入 (第二个窗口
+    // 的原生 OnSurfaceCreated 早于本次注册触发, 事件已经丢了)
+    hgs::surface::NoteRegisteredComponent(nx);
     char idBuf[128] = {0};
     uint64_t idLen = sizeof(idBuf);
     OH_NativeXComponent_GetXComponentId(nx, idBuf, &idLen);
@@ -114,6 +117,8 @@ static napi_value Init(napi_env env, napi_value exports) {
     const napi_property_descriptor desc[] = {
         // Surface 生命周期函数绑定。（暂留，未来具体实现）
         {"bindXComponent",          nullptr, hgs::surface::BindXComponent,          nullptr, nullptr, nullptr, napi_default, nullptr },
+        // 多窗口兜底: ArkTS controller 的 surfaceId → 原生 window → renderer
+        {"attachSurfaceFallback",   nullptr, hgs::surface::AttachSurfaceFallback,   nullptr, nullptr, nullptr, napi_default, nullptr },
         // 渲染器表管理 (定义暂在 plugin_manager, todo 迁入 egl_surface)
         {"createRenderer",          nullptr, hgs::surface::CreateRendererNAPI,      nullptr, nullptr, nullptr, napi_default, nullptr },
         {"resizeRenderer",          nullptr, hgs::surface::ResizeRendererNAPI,      nullptr, nullptr, nullptr, napi_default, nullptr },

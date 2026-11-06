@@ -31,7 +31,14 @@ export struct HgsSurface {
   // 内建 controller: 生命周期事件转交三个回调 (id 经 resolveId/toplevelId 解析)
   private controller: HgsSurfaceController = new HgsSurfaceController(
     () => this.resolveId ? this.resolveId() : this.toplevelId,
-    (id, sid) => this.onSurfaceCreatedCallback(sid, id),
+    (id, sid) => {
+      this.onSurfaceCreatedCallback(sid, id);
+      // 原生通道也挂 controller 的理由: 同进程第二个窗口起, 原生
+      // OnSurfaceCreated 早于 HGS 的回调注册触发 (事件丢失) → 该窗口没有
+      // renderer。controller 一定能拿到 surfaceId, 用它兜底建渲染器
+      // (原生路径已建时为 no-op, 首个窗口不受影响)。
+      this.attachNativeFallback(id, sid);
+    },
     (id, sid, w, h) => this.onSurfaceChangedCallback(sid, id, w, h),
     (id) => this.onSurfaceDestroyedCallback(id));
   @Prop toplevelId: number = 0;
@@ -653,6 +660,34 @@ export struct HgsSurface {
     this.handleNormalTouch(ev);
   }
 
+  // ── 原生通道的多窗口兜底 ───────────────────────────────────────────────────
+  // 仅在 inputBackend=Native 时生效: surfaceId → 原生 window → renderer。
+  // 同进程第一个窗口通常已由原生 OnSurfaceCreated 建好 (no-op)。
+  // surfaceId 来源: 入参优先 (controller 生命周期回调), 否则问 controller
+  // 要 —— 实测 libraryname 模式下 controller 的 onSurfaceCreated **不会**
+  // 触发 (ArkUI 把 surface 交给原生库了), 只有 onLoad 稳定可用。
+  private attachNativeFallback(id: number, surfaceId: string): void {
+    if (id <= 0) return;
+    const native: boolean = this.inputBackend === 2 ||
+      (this.useNativeSurfaceCallback && this.useNativeInputCallback);
+    if (!native) return;
+    let sid: string = surfaceId;
+    if (!sid) {
+      try {
+        sid = this.controller.getXComponentSurfaceId();
+      } catch (e) {
+        return;  // surface 还没建
+      }
+    }
+    if (!sid) return;
+    try {
+      const ok = hgs.attachSurfaceFallback(id, BigInt(sid));
+      hgs.LOGI(`[${this.tag}] attachSurfaceFallback id=${id} ok=${ok}`);
+    } catch (e) {
+      // 旧版 libhgs 无此导出 / BigInt 解析失败, 忽略
+    }
+  }
+
   // ── 触控板辅助 (handleTouchpad 依赖) ────────────────────────────────────────
   private ensureScreenPx(): void {
     if (this.scrWPx > 0) return;
@@ -698,17 +733,18 @@ export struct HgsSurface {
       if (this.inputBackend === 2 ||
           (this.useNativeSurfaceCallback && this.useNativeInputCallback)) {
         // 原生通道 (阶段 1 N1):
-        // surface 生命周期与输入全部由 C++ OH_NativeXComponent 回调驱动 —
+        // surface 生命周期与输入由 C++ OH_NativeXComponent 回调驱动 —
         // XComponent 用 libraryname 触发 napi_init 的 Init (注册 surface
-        // 回调), onLoad 里 bindXComponent(event, toplevelId) 补挂输入绑定
-        // 与原生 renderer。不挂 controller、不挂任何 onTouch/onMouse/
-        // onKeyEvent (Blender Index.ets 同款)。
-        // 生效前提: 宿主已 setInputBackend(2) 或 startServer config
-        // inputBackend=Native — 否则 native_input 回调静默 (避免与 ArkUI 双发)。
+        // 回调), onLoad 里 bindXComponent(toplevelId) 补挂输入绑定。
+        // 同时挂 controller: 多窗口时第二个窗口的原生 OnSurfaceCreated 在
+        // 回调注册之前就触发 (丢了), 只能靠 controller 的 surfaceId 兜底建
+        // renderer (attachSurfaceFallback; 原生已建时为 no-op)。
+        // 不挂任何 onTouch/onMouse/onKeyEvent (输入走原生回调)。
         XComponent({
           id: this.xcId,
           type: XComponentType.SURFACE,
           libraryname: 'hgs',
+          controller: this.controller,
         })
           .width('100%')
           .height('100%')
@@ -731,6 +767,10 @@ export struct HgsSurface {
             }
             if (id > 0) {
               hgs.bindXComponent(id);
+              // 多窗口兜底: 第二个窗口起原生 OnSurfaceCreated 已在注册回调
+              // 之前触发 → native 没有 window。onLoad 时刻 surface 已建好,
+              // 用 controller 的 surfaceId 补建渲染器 (已建时 no-op)。
+              this.attachNativeFallback(id, '');
             }
           })
       } else {

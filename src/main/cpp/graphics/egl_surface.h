@@ -27,5 +27,15 @@ extern OH_NativeXComponent_Callback gXcompCb;
 // 回调; 带 toplevelId 时同时绑定原生输入与 renderer。
 napi_value BindXComponent(napi_env env, napi_callback_info info);
 
+// regXComponentCallback 成功 unwrap 后记录本窗口的组件指针。多窗口时第二个
+// 窗口的原生 OnSurfaceCreated 早于回调注册触发 (那时回调还没挂上, 事件丢),
+// 于是 bindXComponent 等不到 surface — 只能直接绑"刚注册的这个组件"拿输入,
+// 渲染器则由 ArkTS controller 的 surfaceId 兜底 (见 AttachSurfaceFallback)。
+void NoteRegisteredComponent(OH_NativeXComponent *comp);
+
+// NAPI: attachSurfaceFallback(toplevelId, surfaceId: bigint) — ArkTS controller
+// onSurfaceCreated 调; 原生路径已建 renderer 时 no-op (返回 true)。
+napi_value AttachSurfaceFallback(napi_env env, napi_callback_info info);
+
 } // namespace surface
 } // namespace hgs

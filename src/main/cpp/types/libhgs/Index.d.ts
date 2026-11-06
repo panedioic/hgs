@@ -54,6 +54,14 @@ export interface HgsStartConfig {
 //  本 SDK 实测 unwrap failed — 见 graphics/egl_surface.cpp 注释)
 export const bindXComponent: (toplevelId: number) => void;
 /**
+ * 多窗口兜底: 用 ArkTS XComponentController 的 surfaceId 建渲染器。
+ * 同进程第二个窗口起, 原生 OnSurfaceCreated 早于 HGS 的回调注册触发 (事件
+ * 丢失), native 路径拿不到 OHNativeWindow — 由 controller 的
+ * onSurfaceCreated 调这里补建。原生路径已建过 renderer 时是 no-op (返回 true)。
+ * HgsSurface 在 inputBackend=Native 时自动调用。
+ */
+export const attachSurfaceFallback: (toplevelId: number, surfaceId: bigint) => boolean;
+/**
  * 重试 OH_NativeXComponent 回调注册 (napi register 函数只在 import 时跑一次,
  * 那时 XComponent 还没创建; onLoad 时刻重试 unwrap 才能拿到原生对象)。
  * HgsSurface.onLoad 自动调用; 返回 true = 已注册。

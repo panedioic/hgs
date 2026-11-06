@@ -44,6 +44,8 @@ std::unordered_map<OH_NativeXComponent *, OHNativeWindow *> gWindows;
 std::unordered_map<OH_NativeXComponent *, uint32_t> gToplevelIds;
 // bindXComponent(id) 记下的待绑定 toplevelId; 由下一个未绑定的 surface 认领
 uint32_t gPendingBindId = 0;
+// 最近一次经 regXComponentCallback 成功注册回调的组件 (即"当前 onLoad 的窗口")
+OH_NativeXComponent *gLastRegisteredComp = nullptr;
 
 // comp 绑定 toplevel: 写表 + 原生输入绑定 (调用方持 gMutex 外)
 bool BindComp(OH_NativeXComponent *comp, uint32_t tl) {
@@ -105,6 +107,12 @@ void ClaimPendingBind() {
 }
 
 } // namespace
+
+void NoteRegisteredComponent(OH_NativeXComponent *comp) {
+    if (comp == nullptr) return;
+    std::lock_guard<std::mutex> lock(gMutex);
+    gLastRegisteredComp = comp;
+}
 
 void OnSurfaceCreated(OH_NativeXComponent *comp, void *window) {
     uint64_t w = 0, h = 0;
@@ -204,7 +212,29 @@ napi_value BindXComponent(napi_env env, napi_callback_info info) {
         gPendingBindId = toplevelId;
     }
     OH_LOG_INFO(LOG_APP, "[HGS-NAPI] bindXComponent pending tl=%{public}u", toplevelId);
-    ClaimPendingBind();
+
+    // 优先绑"本窗口 onLoad 前刚注册的组件": 同进程第二个窗口起, 原生
+    // OnSurfaceCreated 在回调注册之前就触发了 (事件丢失), gWindows 里没有
+    // 它的条目 —— 若还按"从 gWindows 找未绑定的 surface"走, 输入永远绑不上。
+    bool bound = false;
+    OH_NativeXComponent *lastReg = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(gMutex);
+        if (gLastRegisteredComp != nullptr &&
+            gToplevelIds.find(gLastRegisteredComp) == gToplevelIds.end()) {
+            lastReg = gLastRegisteredComp;  // 刚注册且未绑定 = 本窗口的组件
+        }
+    }
+    if (lastReg != nullptr && BindComp(lastReg, toplevelId)) {
+        {
+            std::lock_guard<std::mutex> lock(gMutex);
+            if (gPendingBindId == toplevelId) gPendingBindId = 0;
+        }
+        bound = true;
+        OH_LOG_INFO(LOG_APP, "[HGS-NAPI] bound to last-registered comp tl=%{public}u comp=%{public}p",
+                    toplevelId, static_cast<void*>(lastReg));
+    }
+    if (!bound) ClaimPendingBind();
     // 认领成功时 ClaimPendingBind 内部已绑输入; 这里补建渲染器。
     // ⚠ TryAttachNativeRenderer 内部取 gMutex — 必须在锁外调用 (先前持锁调用
     //   导致 UI 线程死锁, 渲染器永远挂不上)
@@ -222,6 +252,84 @@ napi_value BindXComponent(napi_env env, napi_callback_info info) {
         TryAttachNativeRenderer(target);
     }
     return nullptr;
+}
+
+// NAPI: attachSurfaceFallback(toplevelId, surfaceId: bigint) — ArkTS controller
+// 的 onSurfaceCreated 调用。存在的意义: 同进程第二个窗口起, 原生
+// OnSurfaceCreated 早于我们的回调注册触发 (丢了), native 路径没有 OHNativeWindow
+// 可用; 而 ArkTS controller 一定能拿到 surfaceId → 由这里补建渲染器。
+// 原生路径已建过 renderer 时直接返回 true (单窗口/首窗口不受影响)。
+napi_value AttachSurfaceFallback(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value args[2];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    uint32_t tl = 0;
+    int64_t sid = 0;
+    bool lossless = true;
+    bool ok = false;
+    if (argc >= 2) {
+        napi_get_value_uint32(env, args[0], &tl);
+        const napi_status s = napi_get_value_bigint_int64(env, args[1], &sid, &lossless);
+        if (s != napi_ok) {
+            OH_LOG_ERROR(LOG_APP, "[HGS-NAPI] attachSurfaceFallback: surfaceId 必须是 BigInt");
+            tl = 0;
+        }
+    }
+    if (tl == 0 || sid <= 0) {
+        OH_LOG_WARN(LOG_APP, "[HGS-NAPI] attachSurfaceFallback: 参数无效 tl=%{public}u sid=%{public}ld",
+                    tl, static_cast<long>(sid));
+    } else if (PluginManager::GetInstance()->GetRendererForToplevel(tl) != nullptr) {
+        ok = true;  // 原生路径已建 (首个窗口的常态), 不重建
+        OH_LOG_INFO(LOG_APP, "[HGS-NAPI] attachSurfaceFallback tl=%{public}u 已有 renderer, skip", tl);
+    } else {
+        OHNativeWindow *nw = nullptr;
+        const int ret = OH_NativeWindow_CreateNativeWindowFromSurfaceId(
+            static_cast<uint64_t>(sid), &nw);
+        if (ret != 0 || nw == nullptr) {
+            OH_LOG_ERROR(LOG_APP,
+                         "[HGS-NAPI] attachSurfaceFallback tl=%{public}u CreateNativeWindowFromSurfaceId 失败 ret=%{public}d",
+                         tl, ret);
+        } else {
+            // buffer geometry 可能还没设过 (该窗口没走到 OnSurfaceCreated):
+            // 先读, 读不到再用 XComponent 尺寸兜底, 最后都不行就等
+            // OnSurfaceChanged 送尺寸
+            int32_t gh = 0, gw = 0;  // GET_BUFFER_GEOMETRY 出参顺序: height, width
+            OH_NativeWindow_NativeWindowHandleOpt(nw, GET_BUFFER_GEOMETRY, &gh, &gw);
+            if (gw <= 0 || gh <= 0) {
+                OH_NativeXComponent *comp = nullptr;
+                {
+                    std::lock_guard<std::mutex> lock(gMutex);
+                    comp = gLastRegisteredComp;
+                }
+                uint64_t cw = 0, ch = 0;
+                if (comp != nullptr &&
+                    OH_NativeXComponent_GetXComponentSize(comp, nw, &cw, &ch) ==
+                        OH_NATIVEXCOMPONENT_RESULT_SUCCESS) {
+                    gw = static_cast<int32_t>(cw);
+                    gh = static_cast<int32_t>(ch);
+                }
+            }
+            if (gw > 0 && gh > 0) {
+                OH_NativeWindow_NativeWindowHandleOpt(nw, SET_BUFFER_GEOMETRY, gw, gh);
+            }
+            ok = PluginManager::GetInstance()->CreateRendererFromWindow(tl, nw);
+            if (!ok) {
+                OH_NativeWindow_DestroyNativeWindow(nw);
+                OH_LOG_ERROR(LOG_APP, "[HGS-NAPI] attachSurfaceFallback tl=%{public}u 建渲染器失败", tl);
+            } else if (gw > 0 && gh > 0) {
+                // Init 是 1x1, 立刻按真实尺寸重画一帧, 不等 OnSurfaceChanged
+                HgsInstance::Instance().ResizeSurface(tl, gw, gh, 0);
+                OH_LOG_INFO(LOG_APP, "[HGS-NAPI] attachSurfaceFallback tl=%{public}u ok %{public}dx%{public}d",
+                            tl, gw, gh);
+            } else {
+                OH_LOG_INFO(LOG_APP,
+                            "[HGS-NAPI] attachSurfaceFallback tl=%{public}u ok (尺寸待 OnSurfaceChanged)", tl);
+            }
+        }
+    }
+    napi_value res = nullptr;
+    napi_get_boolean(env, ok, &res);
+    return res;
 }
 
 } // namespace surface
