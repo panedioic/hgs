@@ -86,6 +86,20 @@ struct SurfaceData {
     bool hasSizeLimits = false;
     int32_t minWidth = 0, minHeight = 0;
     int32_t maxWidth = 0, maxHeight = 0;
+    // fire_limits 去重: GTK 等客户端每次 commit 都重发同样的 min/max, 值未变
+    // 时不打日志/不发事件 (否则 120fps 动画每帧 3 行日志刷爆 hilog)
+    bool limitsFired = false;
+    int32_t firedMinW = 0, firedMinH = 0;
+    int32_t firedMaxW = 0, firedMaxH = 0;
+    // tl_set_min/max_size 日志去重 (同上)
+    bool minLogged = false;
+    bool maxLogged = false;
+    // window_geometry 日志去重 (同上; 每帧重复值只打首帧)
+    bool geoLogged = false;
+    int32_t geoX = 0, geoY = 0, geoW = 0, geoH = 0;
+    // commit 日志去重: 尺寸/stride 未变时不打 (动画窗口 120fps 每帧 2 行)
+    int32_t lastLogBufW = 0, lastLogBufH = 0, lastLogStride = 0;
+    int32_t lastLogContentW = 0, lastLogContentH = 0;
 
     // wl_surface.set_input_region: true = 空区域 (不接受输入, 穿透点击)
     bool inputRegionEmpty = false;

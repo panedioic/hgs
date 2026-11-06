@@ -10,7 +10,7 @@
 // HgsWindowHostService 经 HgsWindowEvent 驱动。
 
 import { AbilityConstant, UIAbility, Want } from '@kit.AbilityKit';
-import { window } from '@kit.ArkUI';
+import { window, display } from '@kit.ArkUI';
 import { BusinessError } from '@kit.BasicServicesKit';
 import bundleManager from '@ohos.bundle.bundleManager';
 import hgs from 'libhgs.so';
@@ -62,7 +62,9 @@ export default class HgsAppWindowAbility extends UIAbility {
       try {
         await mainWin.resize(Math.round(this.contentW * scale),
                              Math.round(this.contentH * scale));
-        hgs.LOGI(`[${TAG}] pre-show resize ${this.contentW * scale}x${this.contentH * scale}`);
+        const r = mainWin.getWindowProperties().windowRect;
+        hgs.LOGI(`[${TAG}] pre-show resize req=${Math.round(this.contentW * scale)}x${Math.round(this.contentH * scale)} ` +
+                 `rect=${r.width}x${r.height}@(${r.left},${r.top}) density=${display.getDefaultDisplaySync().densityPixels}`);
       } catch (e) {
         hgs.LOGW(`[${TAG}] pre-show resize failed: ${JSON.stringify(e)}`);
       }

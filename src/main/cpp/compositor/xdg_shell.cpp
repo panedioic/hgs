@@ -79,11 +79,21 @@ static void tl_move(wl_client*, wl_resource* tlRes, wl_resource* /*seat*/, uint3
 static void tl_resize(wl_client*, wl_resource*, wl_resource*, uint32_t, uint32_t) {}
 static void fire_limits_event(SurfaceData* sd) {
     if (!sd || sd->toplevelId == 0) return;
+    // GTK 等客户端会在**每次 commit** 重发同样的 set_min_size/set_max_size;
+    // 值未变时静默返回, 否则 120fps 动画窗口每帧 3 行日志直接刷爆 hilog
+    if (sd->hasSizeLimits && sd->limitsFired &&
+        sd->minWidth == sd->firedMinW && sd->minHeight == sd->firedMinH &&
+        sd->maxWidth == sd->firedMaxW && sd->maxHeight == sd->firedMaxH) {
+        return;
+    }
     std::string json =
         ToplevelEventBus::JsonLimits(sd->minWidth, sd->minHeight, sd->maxWidth, sd->maxHeight);
     OH_LOG_INFO(LOG_APP, "[XDG] fire_limits tl=%{public}u %{public}s maxState=%{public}s",
                 sd->toplevelId, json.c_str(),
                 gTmgr->IsToplevelMaximized(sd->toplevelId) ? "yes" : "no");
+    sd->limitsFired = true;
+    sd->firedMinW = sd->minWidth;  sd->firedMinH = sd->minHeight;
+    sd->firedMaxW = sd->maxWidth;  sd->firedMaxH = sd->maxHeight;
     WaylandServer::GetInstance()->PostToplevelEvent(sd->toplevelId, ToplevelEventType::Limits,
                                                     json);
 }
@@ -99,8 +109,11 @@ static void tl_set_min_size(wl_client*, wl_resource* tlRes, int32_t w, int32_t h
     sd->minWidth = w;
     sd->minHeight = h;
     sd->hasSizeLimits = true;
-    OH_LOG_INFO(LOG_APP, "[XDG] tl_set_min_size toplevel=%{public}u %{public}dx%{public}d",
-                sd->toplevelId, w, h);
+    if (!sd->minLogged || sd->firedMinW != w || sd->firedMinH != h) {
+        OH_LOG_INFO(LOG_APP, "[XDG] tl_set_min_size toplevel=%{public}u %{public}dx%{public}d",
+                    sd->toplevelId, w, h);
+        sd->minLogged = true;
+    }
     fire_limits_event(sd);
 }
 
@@ -129,6 +142,12 @@ static void tl_set_max_size(wl_client* client, wl_resource* tlRes, int32_t w, in
     sd->maxHeight = h;
     sd->hasSizeLimits = true;
 
+    if (!sd->maxLogged || sd->firedMaxW != w || sd->firedMaxH != h) {
+        OH_LOG_INFO(LOG_APP, "[XDG] tl_set_max_size toplevel=%{public}u %{public}dx%{public}d",
+                    sd->toplevelId, w, h);
+        sd->maxLogged = true;
+    }
+
     auto* ws = WaylandServer::GetInstance();
     int32_t workH = ws->GetWorkAreaHeight();
     if (ShouldInferMaximizeFromMaxSize(ws, sd, w, h, workH)) {
@@ -140,9 +159,6 @@ static void tl_set_max_size(wl_client* client, wl_resource* tlRes, int32_t w, in
                          {XDG_TOPLEVEL_STATE_MAXIMIZED, XDG_TOPLEVEL_STATE_ACTIVATED});
         OH_LOG_INFO(LOG_APP, "[XDG] max_size→maximize tl=%{public}u → configure(%{public}d,%{public}d)",
                     sd->toplevelId, w, workH);
-    } else {
-        OH_LOG_INFO(LOG_APP, "[XDG] tl_set_max_size toplevel=%{public}u %{public}dx%{public}d",
-                    sd->toplevelId, w, h);
     }
     fire_limits_event(sd);
 }
@@ -375,8 +391,14 @@ static void xs_set_window_geometry(wl_client*, wl_resource* xsRes, int32_t x, in
     sd->committed.contentRect.y = y;
     sd->committed.contentRect.w = w;
     sd->committed.contentRect.h = h;
-    OH_LOG_INFO(LOG_APP, "[MW-GEO] window_geometry for surface -> toplevel #%{public}u: (%{public}d,%{public}d %{public}dx%{public}d)",
-                sd->toplevelId, x, y, w, h);
+    // 值未变时静默 (GTK 每帧重发同样 geometry, 120fps 下每帧 1 行刷爆 hilog)
+    if (!sd->geoLogged || sd->geoX != x || sd->geoY != y ||
+        sd->geoW != w || sd->geoH != h) {
+        OH_LOG_INFO(LOG_APP, "[MW-GEO] window_geometry for surface -> toplevel #%{public}u: (%{public}d,%{public}d %{public}dx%{public}d)",
+                    sd->toplevelId, x, y, w, h);
+        sd->geoLogged = true;
+        sd->geoX = x; sd->geoY = y; sd->geoW = w; sd->geoH = h;
+    }
 }
 static void xs_ack_configure(wl_client*, wl_resource*, uint32_t) {}
 

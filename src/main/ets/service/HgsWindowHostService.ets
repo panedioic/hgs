@@ -330,7 +330,15 @@ export class HgsWindowHostService {
           if (rec.state === ST_MAXIMIZED || rec.state === ST_FULLSCREEN) break;
           rec.normalW = ev.geometry.width;
           rec.normalH = ev.geometry.height;
-          this.applyGeometry(rec, ev.geometry.width, ev.geometry.height);
+          // 系统模式 (floatingOnly=false): 窗口尺寸的驱动方是 WMS — 最大化/
+          // 还原/手动拖拽都会改窗口, 客户端内容尺寸只是结果 (XComponent 变
+          // 化 → 我们发 configure)。若在这里照结果 resize, 就成反馈环: 还原
+          // 动画的中间矩形被当成客户端请求再乘 scale 写回, 窗口会钉死在
+          // 2220x1900 (真机实测) 而不是回到 960x814。
+          // 几何模式反过来: 客户端尺寸就是驱动方。
+          if (this.floatingOnly()) {
+            this.applyGeometry(rec, ev.geometry.width, ev.geometry.height);
+          }
         }
         break;
       case EV_STATE_CHANGED:
@@ -417,6 +425,14 @@ export class HgsWindowHostService {
     });
   }
 
+  private logRect(rec: WindowRecord, what: string): void {
+    if (!rec.win) return;
+    try {
+      const r = rec.win.getWindowProperties().windowRect;
+      hgs.LOGI(`[${TAG}] ${what}: rect=${r.width}x${r.height}@(${r.left},${r.top}) state=${rec.state}`);
+    } catch (e) { /* 忽略 */ }
+  }
+
   private applyGeometry(rec: WindowRecord, width: number, height: number): void {
     if (!rec.win || width <= 0 || height <= 0) return;
     const w = Math.max(1, Math.round(width * this.scale()));
@@ -426,6 +442,12 @@ export class HgsWindowHostService {
       // 成功才记录 — 失败 (如窗口迁移期 1300002) 留待重试再发
       rec.lastW = w;
       rec.lastH = h;
+      // resize 的入参单位在 SDK 文档里是 px, 但真机是否有 vp 解释取决于
+      // 系统版本 — 这里回读实际矩形, 单位之争以它为准
+      try {
+        const r = rec.win!.getWindowProperties().windowRect;
+        hgs.LOGI(`[${TAG}] resize req=${w}x${h} rect=${r.width}x${r.height}@(${r.left},${r.top})`);
+      } catch (e) { /* 忽略 */ }
     }).catch((e: BusinessError) => {
       rec.lastW = 0;
       rec.lastH = 0;
@@ -435,37 +457,26 @@ export class HgsWindowHostService {
 
   private applyState(rec: WindowRecord, state: number): void {
     if (!rec.win) return;
-    // floatingOnly=false → 走系统原生 maximize/restore (WMS 全权管理几何,
-    // 有系统动画; 配套要求 floatingOnly=false 时 pre-show resize 管启动尺寸)
-    if (!this.floatingOnly() && state === ST_MAXIMIZED) {
-      rec.hasStateBeenMax = true;
-      rec.win.maximize().catch((e: BusinessError) => {
-        hgs.LOGW(`[${TAG}] maximize: ${JSON.stringify(e)}`);
-      });
-      return;
-    }
-    if (!this.floatingOnly() && state === ST_NORMAL && rec.hasStateBeenMax) {
-      rec.win.restore().catch((e: BusinessError) => {
-        hgs.LOGW(`[${TAG}] restore: ${JSON.stringify(e)}`);
-      });
-      return;
-    }
+    // 最大化/还原统一走**几何方式** (moveTo + resize), 两种窗口模式都一样。
+    // 系统原生 maximize() 在这台设备上是死路 (真机实测):
+    //   1. maximize 之后 resize 永久返回 1300002 — 窗口不再是 freeform;
+    //   2. restore() 只退出"最大化态", 不恢复矩形: 窗口停在最大化期间的
+    //      拉伸尺寸 (~2220x1900), ArkUI 根节点仍是 2880x1920, 内容被裁切。
+    // 几何方式下 resize 始终可用, 客户端通过 configure 同步尺寸。
     if (state === ST_MAXIMIZED) {
-      // 几何最大化: 移到原点 + resize 到整屏 (物理 px)。不用 win.maximize() —
-      // floating-only 模式下系统可能拒绝, 且其状态机 max→restore→max 第三次
-      // 会失效; 几何方式确定性成立, 客户端经 configure 同步新尺寸
-      try {
-        // 记下最大化前的窗口矩形, 还原时回到原位 (moveTo(0,0) 会把它改掉)。
-        // hasPreMax 防重入: attach 后的延迟重试再走一遍时不能把已最大化的
-        // 矩形当成"原位"
-        if (!rec.hasPreMax) {
+      rec.hasStateBeenMax = true;
+      // 记下最大化前的窗口矩形, 还原时回到原位 (moveTo(0,0) 会把它改掉)。
+      // hasPreMax 防重入: attach 后的延迟重试再走一遍时不能把已最大化的
+      // 矩形当成"原位"
+      if (!rec.hasPreMax) {
+        try {
           const r = rec.win.getWindowProperties().windowRect;
           rec.preMaxX = r.left;
           rec.preMaxY = r.top;
           rec.hasPreMax = true;
+        } catch (e) {
+          hgs.LOGW(`[${TAG}] read rect before maximize: ${JSON.stringify(e)}`);
         }
-      } catch (e) {
-        hgs.LOGW(`[${TAG}] read rect before maximize: ${JSON.stringify(e)}`);
       }
       try {
         const d = display.getDefaultDisplaySync();
@@ -484,7 +495,23 @@ export class HgsWindowHostService {
       } catch (e) {
         hgs.LOGW(`[${TAG}] maximize: ${JSON.stringify(e)}`);
       }
-    } else if (state === ST_MINIMIZED) {
+      return;
+    }
+    if (state === ST_NORMAL && rec.hasStateBeenMax && rec.hasPreMax) {
+      // 还原: 回到最大化前的位置 + 最近一次 Normal 内容尺寸
+      // (spec.width/height 已被最大化期间的 configure 尺寸污染, 不能用)
+      rec.win.moveTo(rec.preMaxX, rec.preMaxY).catch((e: BusinessError) => {
+        hgs.LOGW(`[${TAG}] restore moveTo: ${JSON.stringify(e)}`);
+      });
+      rec.hasPreMax = false;
+      const w = rec.normalW > 0 ? rec.normalW : (rec.spec?.width ?? 0);
+      const h = rec.normalH > 0 ? rec.normalH : (rec.spec?.height ?? 0);
+      rec.lastW = 0;  // 最大化期间 WMS 改过矩形, 绕过去重
+      rec.lastH = 0;
+      this.applyGeometry(rec, w, h);
+      return;
+    }
+    if (state === ST_MINIMIZED) {
       rec.win.minimize().catch((e: BusinessError) => {
         hgs.LOGW(`[${TAG}] minimize: ${JSON.stringify(e)}`);
       });
@@ -493,14 +520,7 @@ export class HgsWindowHostService {
         hgs.LOGW(`[${TAG}] setFullScreen: ${JSON.stringify(e)}`);
       });
     } else {
-      // Normal: 回到最大化前的位置 + 最近一次 Normal 内容尺寸
-      // (spec.width/height 已被最大化期间的 configure 尺寸污染, 不能用)
-      if (rec.hasPreMax) {
-        rec.win.moveTo(rec.preMaxX, rec.preMaxY).catch((e: BusinessError) => {
-          hgs.LOGW(`[${TAG}] restore moveTo: ${JSON.stringify(e)}`);
-        });
-        rec.hasPreMax = false;
-      }
+      // Normal 且没有最大化前矩形 (例如首次进入 Normal): 只同步内容尺寸
       const w = rec.normalW > 0 ? rec.normalW : (rec.spec?.width ?? 0);
       const h = rec.normalH > 0 ? rec.normalH : (rec.spec?.height ?? 0);
       this.applyGeometry(rec, w, h);

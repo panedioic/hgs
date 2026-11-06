@@ -802,7 +802,12 @@ void EglRenderer::RenderLoop() {
             // [PIX-SAMPLE] 帧内容白度采样: 区分"帧本身是白的" (guest/wine
             // 侧渲染或回读) vs "帧有内容但显示白" (宿主 EGL/WMS 侧)。
             // 每 30 帧对 px 采样 (中心像素 RGB + 全宽白像素占比)。
-            if (++pixSampleN % 30 == 1) {
+            static int64_t lastPixSampleMs = 0;
+            int64_t pixNowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count();
+            ++pixSampleN;
+            if (pixNowMs - lastPixSampleMs >= 30000) {
+                lastPixSampleMs = pixNowMs;
                 size_t whitePixels = 0, totalPx = px.size() / 4;
                 // 采样: 每 16 像素取 1 个像素
                 if (totalPx > 0) {
