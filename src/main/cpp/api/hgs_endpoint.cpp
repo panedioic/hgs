@@ -9,6 +9,7 @@ namespace hgs {
 
 SocketEndpoint SplitSocketPath(const std::string& socketPath) {
     SocketEndpoint ep;
+    if (socketPath.find('\0') != std::string::npos) return ep;
     if (socketPath.empty()) return ep;          // 空串
     if (socketPath.front() != '/') return ep;   // 相对路径
     if (socketPath.back() == '/') return ep;    // 尾斜杠 (basename 为空)
@@ -16,6 +17,7 @@ SocketEndpoint SplitSocketPath(const std::string& socketPath) {
     const auto pos = socketPath.find_last_of('/');
     // 首字符是 '/', pos 必然存在; pos+1 起 basename 非空 (上面已排除尾斜杠)
     ep.displayName = socketPath.substr(pos + 1);
+    if (ep.displayName == "." || ep.displayName == "..") return {};
     if (ep.displayName.empty()) return ep;      // 防御 (理论上不可达)
     ep.directory = (pos == 0) ? std::string("/") : socketPath.substr(0, pos);
     ep.valid = true;

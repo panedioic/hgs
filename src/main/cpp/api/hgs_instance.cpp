@@ -22,6 +22,7 @@
 #include "input/input_manager.h"
 #include "input/pointer_extras.h"
 #include "hgs_endpoint.h"
+#include "include/hgs/service.h"
 
 namespace hgs {
 
@@ -150,6 +151,21 @@ HgsInstance& HgsInstance::Instance() {
 // ----------------------------------------------------------------------------
 
 bool HgsInstance::Start(const HgsConfig& config) {
+    service::Config requested;
+    const auto endpoint = SplitSocketPath(config.socketPath);
+    requested.runtimeDir = endpoint.directory;
+    requested.waylandSocket = endpoint.displayName;
+    requested.output = config.output;
+    requested.composition = config.composition;
+    requested.inputBackend = config.inputBackend;
+    requested.setProcessEnvironment = config.setProcessEnvironment;
+    requested.legacyWaylandFeatures = config.features;
+    const auto result = service::DefaultRuntime().Start(requested);
+    if (!result.ok) impl_->SetError(result.error.message.c_str());
+    return result.ok;
+}
+
+bool HgsInstance::StartBackend(const HgsConfig& config) {
     const SocketEndpoint ep = SplitSocketPath(config.socketPath);
     if (!ep.valid) {
         impl_->SetError("Start: invalid socketPath (absolute path with basename required)");
@@ -172,9 +188,10 @@ bool HgsInstance::Start(const HgsConfig& config) {
             host->OnStateChanged(std::string_view(state != nullptr ? state : ""));
         }
     });
-    ws->SetToplevelCallback([impl](uint32_t id, ToplevelEventType type, const char* json) {
+    ws->SetToplevelCallback([this, impl](uint32_t id, ToplevelEventType type, const char* json) {
         // 阶段 2 W2a: 先喂窗口管理器 (读 ToplevelManager 权威状态, 不解析 JSON)
         impl->HandleWindowEvent(id, type);
+        if (serviceObserver_) serviceObserver_(id, type, json);
         if (IHgsHost* host = impl->HostSnapshot()) {
             ToplevelEvent evt;
             evt.id = id;
@@ -199,7 +216,9 @@ bool HgsInstance::Start(const HgsConfig& config) {
     return ok;
 }
 
-void HgsInstance::Stop() {
+void HgsInstance::Stop() { service::DefaultRuntime().Stop(); }
+
+void HgsInstance::StopBackend() {
     auto* impl = impl_.get();
     // 先停事件循环 (DestroyAllToplevels → bus 停止派发) 再清表, 保证
     // 适配 lambda 不再访问已清空的 generation 表 (phase0 §4.7)
@@ -224,7 +243,7 @@ std::string HgsInstance::WaylandDisplayName() const {
         path = impl_->socketPath;
     }
     const SocketEndpoint ep = SplitSocketPath(path);
-    return ep.valid ? ep.displayName : std::string();
+    return IsRunning() && ep.valid ? ep.displayName : std::string();
 }
 
 std::vector<std::string> HgsInstance::ClientEnvironment() const {
@@ -233,7 +252,7 @@ std::vector<std::string> HgsInstance::ClientEnvironment() const {
         std::lock_guard<std::mutex> lk(impl_->mutex);
         path = impl_->socketPath;
     }
-    return BuildClientEnvironment(path);
+    return IsRunning() ? BuildClientEnvironment(path) : std::vector<std::string>{};
 }
 
 void HgsInstance::SetHost(IHgsHost* host) {

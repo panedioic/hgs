@@ -14,6 +14,7 @@
 #include "compositor/wayland_server.h"
 #include "bridge/plugin_manager.h"
 #include "bridge/window_napi.h"
+#include "bindings/napi/service_napi.h"
 #include "input/input_manager.h"
 #include "input/pointer_extras.h"
 #include "input/game_controller_bridge.h"
@@ -209,6 +210,7 @@ static napi_value Init(napi_env env, napi_value exports) {
 
     };
     napi_define_properties(env, exports, sizeof(desc) / sizeof(desc[0]), desc);
+    hgs::service::RegisterServiceNapi(env, exports);
 
     // XComponent(libraryname:'hgs') 触发的加载: exports 携带原生对象。
     // 注意: 本注册函数每个**进程**只跑一次 (JS 首次 import libhgs.so);

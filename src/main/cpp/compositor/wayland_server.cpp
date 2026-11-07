@@ -35,6 +35,7 @@ extern "C" void RegisterWlCoreGlobals(wl_display* display);
 #include <hilog/log.h>
 #include "bridge/plugin_manager.h"
 #include "bridge/napi_host_adapter.h"  // NAPI IHgsHost 适配 (阶段 1 P1.1)
+#include "hgs_endpoint.h"
 #include "hgs_instance.h"             // 公共门面 (阶段 1: NAPI 业务入口经此转发)
 
 // 核心协议接口表与实现已剥离到 wl_core.cpp (Phase 3 纯搬移)
@@ -53,40 +54,34 @@ bool WaylandServer::Start(const std::string& socketPath, bool setProcessEnvironm
 
     OH_LOG_INFO(LOG_APP, "[WL] Starting compositor, socket=%{public}s", socketPath.c_str());
 
-    // 清理残留 socket
-    unlink(socketPath.c_str());
-
-    // 确保 socket 目录存在
-    auto pos = socketPath.find_last_of('/');
-    std::string dir = socketPath.substr(0, pos);
-    std::string name = socketPath.substr(pos + 1);
-    int rc = mkdir(dir.c_str(), 0700);
-    OH_LOG_INFO(LOG_APP, "[WL] mkdir(%{public}s) = %{public}d, errno=%{public}d",
-                dir.c_str(), rc, errno);
-
-    // 环境变量注入 (阶段 1 P1.3): 默认沿用旧行为; false 时宿主经
-    // HgsInstance::ClientEnvironment() 显式传给子进程 (WineHua 的
-    // wine_env.cpp 已自组 XDG_RUNTIME_DIR/WAYLAND_DISPLAY, 不依赖本进程)
-    if (setProcessEnvironment) {
-        setenv("XDG_RUNTIME_DIR", dir.c_str(), 1);
+    std::string endpointError;
+    if (!listener_.Open(socketPath, endpointError)) {
+        OH_LOG_ERROR(LOG_APP, "[WL] listener failed: %{public}s", endpointError.c_str());
+        return false;
     }
 
     display_ = wl_display_create();
     if (!display_) {
         OH_LOG_ERROR(LOG_APP, "[WL] wl_display_create failed, errno=%{public}d", errno);
+        listener_.Reset();
         return false;
     }
     OH_LOG_INFO(LOG_APP, "[WL] wl_display created");
 
-    if (wl_display_add_socket(display_, name.c_str()) != 0) {
-        OH_LOG_ERROR(LOG_APP, "[WL] wl_display_add_socket(%{public}s) failed, errno=%{public}d",
-                     name.c_str(), errno);
+    const int fd = listener_.TakeFd();
+    if (wl_display_add_socket_fd(display_, fd) != 0) {
+        close(fd); // add_socket_fd consumes the descriptor only on success
+        wl_display_destroy(display_);
+        display_ = nullptr;
+        listener_.Reset();
         return false;
     }
-    OH_LOG_INFO(LOG_APP, "[WL] socket added: %{public}s", name.c_str());
-
+    // Binding an explicit descriptor works even when XDG_RUNTIME_DIR is absent
+    // or points at a different service. v1 environment mutation is opt-in here.
     if (setProcessEnvironment) {
-        setenv("WAYLAND_DISPLAY", name.c_str(), 1);
+        const auto endpoint = hgs::SplitSocketPath(socketPath);
+        setenv("XDG_RUNTIME_DIR", endpoint.directory.c_str(), 1);
+        setenv("WAYLAND_DISPLAY", endpoint.displayName.c_str(), 1);
     }
 
     // 注册 global 对象 (核心协议实现已剥离到 wl_core.cpp)
@@ -122,21 +117,19 @@ bool WaylandServer::Start(const std::string& socketPath, bool setProcessEnvironm
 void WaylandServer::Stop() {
     if (!running_) return;
     running_ = false;
-    // 主动清空全部 toplevel: stopAll 强杀 Wine 进程时, wl_display_terminate
-    // 在 client 断开事件被 dispatch 之前终止事件循环, 依赖断开事件触发的
-    // OnToplevelDestroyed 不会执行 → ToplevelManager 残留旧 toplevel (重启后
-    // 旧窗口画面共存、占 zOrder、不响应事件)。此处显式遍历逐个收口并补发
-    // destroyed 通知给 ArkTS (让 Wine 子窗口正确关闭)
-    DestroyAllToplevels();
+    // End protocol dispatch before touching protocol objects from the caller.
+    if (display_) wl_display_terminate(display_);
+    if (thread_.joinable()) thread_.join();
+    if (display_) wl_display_destroy_clients(display_);
+    DestroyAllToplevels(); // fallback for any internally retained toplevels
     InputManager::GetInstance()->Shutdown();
     Seat::GetInstance()->Unregister();
     TextInput::GetInstance()->Unregister();
-    if (display_) wl_display_terminate(display_);
-    if (thread_.joinable()) thread_.join();
     if (display_) {
         wl_display_destroy(display_);
         display_ = nullptr;
     }
+    listener_.Reset();
     session_.firstFrame = false;   // 存储 = 会话共享 POD (重构第 6B 步)
 }
 

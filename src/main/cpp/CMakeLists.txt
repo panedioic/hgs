@@ -32,6 +32,14 @@ add_library(hgs SHARED
 
     # ── 公共 API 门面 (阶段 0) ──
     # api/*.h 零平台依赖; 实现文件是唯一允许依赖平台/现有单例的位置
+    core/window_registry.cpp
+    core/event_bus.cpp
+    core/input_router.cpp
+    bindings/napi/service_napi.cpp
+    runtime/service_runtime.cpp
+    runtime/service_instance.cpp
+    backends/wayland/legacy_wayland_backend.cpp
+    platform/unix/socket_listener.cpp
     api/hgs_endpoint.cpp
     api/hgs_instance.cpp
     api/hgs_window_policy.cpp
@@ -96,6 +104,8 @@ add_library(hgs SHARED
     protocols/relative-pointer-unstable-v1-protocol.c
     protocols/text-input-unstable-v3-protocol.c
 )
+
+target_include_directories(hgs PUBLIC ${NATIVERENDER_ROOT_PATH}/include)
 
 # BlitScaled (双线性缩放 blit) 是桌面合成热路径 — -O2 必须跟着源文件走
 set_source_files_properties(compositor/frame/compositor_blit.cpp PROPERTIES COMPILE_OPTIONS "-O2")

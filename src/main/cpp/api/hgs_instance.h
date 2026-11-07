@@ -19,6 +19,7 @@
 // ============================================================================
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -29,6 +30,7 @@
 #include "hgs_window_manager.h"
 
 namespace hgs {
+namespace service { class LegacyWaylandBackend; }
 
 class HGS_API HgsInstance {
 public:
@@ -109,6 +111,10 @@ public:
     HgsWindowManager& WindowManager();
 
 private:
+    friend class service::LegacyWaylandBackend;
+    bool StartBackend(const HgsConfig& config);
+    void StopBackend();
+    std::function<void(uint32_t, ToplevelEventType, const char*)> serviceObserver_;
     HgsInstance();
     ~HgsInstance();
     struct Impl;

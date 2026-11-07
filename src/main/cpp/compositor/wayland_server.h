@@ -1,4 +1,5 @@
 #pragma once
+#include "platform/unix/socket_listener.h"
 #include <wayland-server-core.h>
 #include <wayland-server-protocol.h>
 #include <string>
@@ -282,6 +283,7 @@ private:
     void FinishCommit(SurfaceData* sd, wl_resource* surfRes);
 
     wl_display* display_ = nullptr;
+    hgs::platform::SocketListener listener_;
     std::thread thread_;
     std::atomic<bool> running_{false};
 

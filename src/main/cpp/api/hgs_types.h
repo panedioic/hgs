@@ -21,7 +21,7 @@
 namespace hgs {
 
 // HGS 公共 API 版本。阶段 0 = 1.0。
-inline constexpr uint32_t HGS_API_VERSION = (1u << 16) | 0u;
+inline constexpr uint32_t HGS_API_VERSION = (1u << 16) | 1u;
 
 // -- 标识类型 --
 using ToplevelId        = uint32_t;  // Wayland toplevel (协议对象); 0 = 无效

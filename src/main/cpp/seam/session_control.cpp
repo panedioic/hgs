@@ -1,5 +1,6 @@
 // hgs/src/main/cpp/seam/session_control.h — Wayland Session Contril 实现
 #include "registry.h"
+#include "api/hgs_instance.h"
 
 #include "compositor/wayland_server.h"
 #include "input/controller/controller_runtime.h"
@@ -45,7 +46,7 @@ public:
     }
     void Stop() override
     {
-        WaylandServer::GetInstance()->Stop();
+        HgsInstance::Instance().Stop();
     }
     void ResetSessionState() override
     {
