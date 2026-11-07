@@ -13,5 +13,6 @@ public:
     // Stop joins the loop, drains callbacks and cleans owned endpoints.
     virtual void Stop() = 0;
     virtual bool Send(const WindowSnapshot& window, const Input& input) = 0;
+    virtual bool BindSurface(const WindowSnapshot&, uint64_t, bool) { return false; }
 };
 }

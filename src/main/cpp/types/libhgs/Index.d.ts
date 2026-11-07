@@ -285,4 +285,5 @@ export const serviceInspect: () => HgsServiceSnapshot;
 export const serviceWindows: (epoch?: string) => HgsServiceWindow[];
 export const serviceClientEnvironment: (protocol: string, epoch: string) => HgsClientEnvironment;
 export const serviceSendInput: (windowId: string, input: HgsServiceInput, epoch?: string) => boolean;
+export const serviceBindSurface: (windowId: string, surfaceId: string, attach: boolean, epoch: string) => boolean;
 export const setServiceEventCallback: (listener: (event: HgsServiceEvent) => void) => boolean;

@@ -147,7 +147,10 @@ if(HGS_BUILD_X11)
        NOT EXISTS "${HGS_X11_LIB}/libxwayland_ohos.so")
         message(FATAL_ERROR "HGS_BUILD_X11 requires a staged OHOS wlroots 0.20.2 and Xwayland SDK")
     endif()
-    add_library(hgs_xwayland_session OBJECT backends/xwayland/runtime/session.c)
+    add_library(hgs_xwayland_session OBJECT
+        backends/xwayland/runtime/session.c
+        platform/ohos/presentation/cpu_surface.c
+    )
     set_target_properties(hgs_xwayland_session PROPERTIES POSITION_INDEPENDENT_CODE ON)
     target_compile_definitions(hgs_xwayland_session PRIVATE WLR_USE_UNSTABLE _GNU_SOURCE)
     target_sources(hgs PRIVATE
@@ -175,6 +178,7 @@ if(HGS_BUILD_X11)
         "${HGS_X11_LIB}/libxcb-render.so.0"
         "${HGS_X11_LIB}/libxcb-res.so.0"
         "${HGS_X11_LIB}/libxcb-xfixes.so.0"
+        libnative_buffer.so
         libchild_process.so
     )
     add_library(hgs_xwayland_child SHARED platform/ohos/process/xwayland_child.cpp)

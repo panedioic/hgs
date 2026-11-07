@@ -30,6 +30,10 @@ export class HgsSession {
     return hgsNapi.serviceWindows(this.epoch);
   }
 
+  bindSurface(windowId: string, surfaceId: string, attach: boolean): boolean {
+    return hgsNapi.serviceBindSurface(windowId, surfaceId, attach, this.epoch);
+  }
+
   sendInput(windowId: string, input: HgsServiceInput): boolean {
     const current = hgsNapi.serviceInspect();
     if (current.epoch !== this.epoch || current.state !== 'ready') return false;

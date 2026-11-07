@@ -1,6 +1,9 @@
 #include "session.h"
+#include "platform/ohos/presentation/cpu_surface.h"
 #include "platform/ohos/process/xwayland_process.h"
 
+#include <libdrm/drm_fourcc.h>
+#include <hilog/log.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -16,6 +19,7 @@
 #include <wlr/interfaces/wlr_keyboard.h>
 #include <wlr/render/pixman.h>
 #include <wlr/render/wlr_renderer.h>
+#include <wlr/types/wlr_buffer.h>
 #include <wlr/types/wlr_compositor.h>
 #include <wlr/types/wlr_output.h>
 #include <wlr/types/wlr_seat.h>
@@ -59,6 +63,9 @@ struct xwindow {
     struct wl_list link;
     uint64_t client_id, generation;
     bool mapped;
+    struct hgs_cpu_surface output;
+    unsigned present_attempts;
+    bool presented;
     struct wl_listener destroy, associate, dissociate;
     struct wl_listener map, unmap, commit;
     struct wl_listener title, app_class, geometry, configure, close;
@@ -122,6 +129,8 @@ static void map_window(struct wl_listener *listener, void *data) {
 static void withdraw_window(struct xwindow *window) {
     if (!window->mapped) return;
     window->mapped = false;
+    hgs_cpu_surface_close(&window->output);
+    window->present_attempts = 0;
     publish(window, HGS_X11_UNMAPPED);
 }
 
@@ -135,7 +144,10 @@ static void unmap_window(struct wl_listener *listener, void *data) {
 static void commit_window(struct wl_listener *listener, void *data) {
     (void)data;
     struct xwindow *window = wl_container_of(listener, window, commit);
-    if (window->mapped) wlr_output_schedule_frame(window->session->output);
+    if (window->mapped) {
+        if (window->output.id) window->present_attempts = 8;
+        wlr_output_schedule_frame(window->session->output);
+    }
 }
 
 static void associate_window(struct wl_listener *listener, void *data) {
@@ -230,6 +242,37 @@ static void new_window(struct wl_listener *listener, void *data) {
     listen_to(&surface->events.request_close, &window->close, request_close);
 }
 
+static pixman_format_code_t pixman_format(uint32_t fourcc) {
+    switch (fourcc) {
+        case DRM_FORMAT_XRGB8888: return PIXMAN_x8r8g8b8;
+        case DRM_FORMAT_ARGB8888: return PIXMAN_a8r8g8b8;
+        case DRM_FORMAT_XBGR8888: return PIXMAN_x8b8g8r8;
+        case DRM_FORMAT_ABGR8888: return PIXMAN_a8b8g8r8;
+        case DRM_FORMAT_RGB565: return PIXMAN_r5g6b5;
+        default: return 0;
+    }
+}
+
+static bool present_window(struct xwindow *window) {
+    struct wlr_client_buffer *client = window->xsurface->surface->buffer;
+    struct wlr_buffer *buffer = client ? client->source : NULL;
+    if (!buffer) return false;
+    void *pixels = NULL;
+    uint32_t fourcc;
+    size_t stride;
+    if (!wlr_buffer_begin_data_ptr_access(buffer, WLR_BUFFER_DATA_PTR_ACCESS_READ,
+                                          &pixels, &fourcc, &stride)) return false;
+    const pixman_format_code_t format = pixman_format(fourcc);
+    pixman_image_t *image = pixels && format && stride <= INT_MAX && stride % 4 == 0 &&
+        stride >= (size_t)buffer->width * PIXMAN_FORMAT_BPP(format) / 8
+        ? pixman_image_create_bits_no_clear(format, buffer->width, buffer->height, pixels, (int)stride)
+        : NULL;
+    const bool shown = image && hgs_cpu_surface_present(&window->output, image);
+    if (image) pixman_image_unref(image);
+    wlr_buffer_end_data_ptr_access(buffer);
+    return shown;
+}
+
 static void output_frame(struct wl_listener *listener, void *data) {
     (void)data;
     struct hgs_x11_session *session = wl_container_of(listener, session, frame);
@@ -237,7 +280,22 @@ static void output_frame(struct wl_listener *listener, void *data) {
     clock_gettime(CLOCK_MONOTONIC, &now);
     struct xwindow *window;
     wl_list_for_each(window, &session->windows, link) {
-        if (window->mapped) wlr_surface_send_frame_done(window->xsurface->surface, &now);
+        if (!window->mapped) continue;
+        wlr_surface_send_frame_done(window->xsurface->surface, &now);
+        if (!window->present_attempts) continue;
+        if (present_window(window)) {
+            window->present_attempts = 0;
+            if (!window->presented) {
+                OH_LOG_Print(LOG_APP, LOG_INFO, 0, "HGS_X11", "Presented first frame xid=%{public}u surface=%{public}llu",
+                             window->xsurface->window_id, (unsigned long long)window->output.id);
+                window->presented = true;
+            }
+        } else if (--window->present_attempts) {
+            wlr_output_schedule_frame(session->output);
+        } else if (!window->presented) {
+            OH_LOG_Print(LOG_APP, LOG_WARN, 0, "HGS_X11", "No frame available for xid=%{public}u surface=%{public}llu",
+                         window->xsurface->window_id, (unsigned long long)window->output.id);
+        }
     }
 }
 
@@ -482,14 +540,40 @@ void hgs_x11_destroy(struct hgs_x11_session *session) {
     free(session);
 }
 
-static struct wlr_xwayland_surface *target(struct hgs_x11_session *session, uint32_t xid,
-                                           uint64_t generation) {
+static struct xwindow *find_window(struct hgs_x11_session *session, uint32_t xid, uint64_t generation) {
     struct xwindow *window;
     wl_list_for_each(window, &session->windows, link) {
         if (window->mapped && window->xsurface->window_id == xid &&
-            window->generation == generation) return window->xsurface;
+            window->generation == generation) return window;
     }
     return NULL;
+}
+
+void hgs_x11_bind_surface(struct hgs_x11_session *session, uint32_t xid, uint64_t generation,
+                          uint64_t surface_id, bool attach) {
+    struct xwindow *window = find_window(session, xid, generation);
+    if (!window) return;
+    if (!attach) {
+        if (window->output.id != surface_id) return;
+        hgs_cpu_surface_close(&window->output);
+        window->present_attempts = 0;
+        return;
+    }
+    if (window->output.id != surface_id) {
+        if (!hgs_cpu_surface_open(&window->output, surface_id)) {
+            OH_LOG_Print(LOG_APP, LOG_WARN, 0, "HGS_X11", "Could not bind surface=%{public}llu",
+                         (unsigned long long)surface_id);
+            return;
+        }
+        window->presented = false;
+    }
+    window->present_attempts = 8;
+    wlr_output_schedule_frame(session->output);
+}
+
+static struct wlr_xwayland_surface *target(struct hgs_x11_session *session, uint32_t xid, uint64_t generation) {
+    struct xwindow *window = find_window(session, xid, generation);
+    return window ? window->xsurface : NULL;
 }
 
 static uint32_t now_ms(void) {

@@ -16,6 +16,9 @@ public:
     ClientEnvironment Environment(Protocol protocol, Error& error, const std::string& expectedEpoch = {}) const;
     std::vector<WindowSnapshot> Windows(const std::string& expectedEpoch = {}) const;
     bool Send(const WindowId& window, const Input& input, const std::string& expectedEpoch = {});
+    // Queues an OHOS Surface binding on backends that support it. Detach only
+    // removes a binding with the same surface ID.
+    bool BindSurface(const WindowId& window, uint64_t surfaceId, bool attach, const std::string& expectedEpoch);
     uint64_t Subscribe(std::function<void(const Event&)> listener);
     void Unsubscribe(uint64_t token);
 private:

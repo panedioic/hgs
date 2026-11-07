@@ -10,13 +10,15 @@
 #include <sys/eventfd.h>
 #include <thread>
 #include <unistd.h>
+#include <variant>
 
 namespace hgs::service {
 struct XwaylandBackend::Impl {
+    struct SurfaceBinding { uint64_t id; bool attach; };
     struct Command {
         uint32_t xid;
         uint64_t generation;
-        Input input;
+        std::variant<Input, SurfaceBinding> operation;
     };
 
     std::unique_ptr<X11Endpoint> endpoint;
@@ -75,7 +77,11 @@ struct XwaylandBackend::Impl {
             pending.swap(commands);
         }
         for (const auto& item : pending) {
-            const auto& i = item.input;
+            if (const auto* surface = std::get_if<SurfaceBinding>(&item.operation)) {
+                hgs_x11_bind_surface(session, item.xid, item.generation, surface->id, surface->attach);
+                continue;
+            }
+            const auto& i = std::get<Input>(item.operation);
             switch (i.kind) {
                 case Input::Kind::Key:
                     hgs_x11_key(session, item.xid, item.generation, i.key.evdevCode, i.key.pressed);
@@ -155,6 +161,14 @@ struct XwaylandBackend::Impl {
             count = write(wake, &signal, sizeof(signal));
         } while (count < 0 && errno == EINTR);
     }
+
+    bool Enqueue(const WindowSnapshot& window, std::variant<Input, SurfaceBinding> operation) {
+        std::lock_guard<std::mutex> lock(mutex);
+        if (!started || stopping.load() || window.origin.epoch != epoch || commands.size() >= 256) return false;
+        commands.push_back({static_cast<uint32_t>(window.origin.nativeId), window.origin.objectGeneration, operation});
+        Wake();
+        return true;
+    }
 };
 
 XwaylandBackend::XwaylandBackend() : impl_(std::make_unique<Impl>()) {}
@@ -215,11 +229,10 @@ void XwaylandBackend::Stop() {
 }
 
 bool XwaylandBackend::Send(const WindowSnapshot& window, const Input& input) {
-    auto& p = *impl_;
-    std::lock_guard<std::mutex> lock(p.mutex);
-    if (!p.started || window.origin.epoch != p.epoch || p.commands.size() >= 256) return false;
-    p.commands.push_back({static_cast<uint32_t>(window.origin.nativeId), window.origin.objectGeneration, input});
-    p.Wake();
-    return true;
+    return impl_->Enqueue(window, input);
+}
+
+bool XwaylandBackend::BindSurface(const WindowSnapshot& window, uint64_t surfaceId, bool attach) {
+    return impl_->Enqueue(window, Impl::SurfaceBinding{surfaceId, attach});
 }
 }

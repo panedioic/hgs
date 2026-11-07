@@ -40,6 +40,8 @@ bool hgs_x11_ready(const struct hgs_x11_session *session);
 const char *hgs_x11_diagnostic(const struct hgs_x11_session *session);
 bool hgs_x11_child_lost(const struct hgs_x11_session *session);
 void hgs_x11_destroy(struct hgs_x11_session *session);
+void hgs_x11_bind_surface(struct hgs_x11_session *session, uint32_t xid, uint64_t generation,
+                          uint64_t surface_id, bool attach);
 void hgs_x11_key(struct hgs_x11_session *session, uint32_t xid, uint64_t generation,
                  uint32_t code, bool pressed);
 void hgs_x11_pointer(struct hgs_x11_session *session, uint32_t xid, uint64_t generation,

@@ -267,6 +267,18 @@ bool Runtime::Send(const WindowId& window, const Input& input, const std::string
     std::lock_guard<std::mutex> lock(impl_->mutex);
     return impl_->snapshot.state == State::Ready && (expectedEpoch.empty() || expectedEpoch == std::to_string(impl_->snapshot.epoch)) && impl_->input.Send(window, input);
 }
+bool Runtime::BindSurface(const WindowId& id, uint64_t surfaceId, bool attach, const std::string& expectedEpoch) {
+    auto& p = *impl_;
+    std::lock_guard<std::mutex> lock(p.mutex);
+    if (!surfaceId || p.snapshot.state != State::Ready || expectedEpoch != std::to_string(p.snapshot.epoch)) return false;
+    const auto window = p.registry.Find(id);
+    if (!window) return false;
+    for (auto* backend : p.active) {
+        if (backend->Id() == window->origin.backendId && backend->GetProtocol() == window->origin.protocol)
+            return backend->BindSurface(*window, surfaceId, attach);
+    }
+    return false;
+}
 uint64_t Runtime::Subscribe(std::function<void(const Event&)> listener) { return impl_->events.Subscribe(std::move(listener)); }
 void Runtime::Unsubscribe(uint64_t token) { impl_->events.Unsubscribe(token); }
 }

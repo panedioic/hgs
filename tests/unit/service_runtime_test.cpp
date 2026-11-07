@@ -14,6 +14,7 @@ struct Fake final : Backend {
     Sink sink;
     Epoch epoch = 0;
     std::vector<WindowSnapshot> inputs;
+    std::vector<std::tuple<WindowId, uint64_t, bool>> bindings;
     explicit Fake(Protocol p) : protocol(p) {}
     Protocol GetProtocol() const override { return protocol; }
     std::string Id() const override { return protocol == Protocol::Wayland ? "wl" : "x"; }
@@ -27,6 +28,11 @@ struct Fake final : Backend {
     }
     void Stop() override { ++stops; }
     bool Send(const WindowSnapshot& w, const Input&) override { inputs.push_back(w); return true; }
+    bool BindSurface(const WindowSnapshot& w, uint64_t id, bool attach) override {
+        if (protocol != Protocol::X11) return false;
+        bindings.emplace_back(w.id, id, attach);
+        return true;
+    }
     Event Create(uint64_t client, uint64_t native, uint64_t generation, std::string title) {
         Event e; e.kind = EventKind::Created;
         e.window.origin = {epoch, Id(), protocol, client, native, generation};
@@ -115,11 +121,21 @@ int main() {
             assert(atomic.Send(w.id, input));
         }
         assert(ap->inputs.size() == 1 && bp->inputs.size() == 1);
+        const auto activeEpoch = std::to_string(atomic.Inspect().epoch);
+        const auto& x11 = bp->inputs.front().id;
+        assert(!atomic.BindSurface(ap->inputs.front().id, 9, true, activeEpoch));
+        assert(!atomic.BindSurface(x11, 0, true, activeEpoch));
+        assert(!atomic.BindSurface(x11, 9, true, std::to_string(atomic.Inspect().epoch - 1)));
+        assert(atomic.BindSurface(x11, 9, true, activeEpoch));
+        assert(atomic.BindSurface(x11, 9, false, activeEpoch));
+        assert(bp->bindings.size() == 2 && bp->bindings.front() == std::make_tuple(x11, uint64_t{9}, true));
+        assert(bp->bindings.back() == std::make_tuple(x11, uint64_t{9}, false));
 
         Event lost;
         lost.kind = EventKind::Destroyed;
         lost.window = bp->inputs.front();
         bp->sink(lost);
+        assert(!atomic.BindSurface(x11, 9, true, activeEpoch));
         lost = {};
         lost.kind = EventKind::BackendDisconnected;
         lost.detail = "Xwayland process exited";

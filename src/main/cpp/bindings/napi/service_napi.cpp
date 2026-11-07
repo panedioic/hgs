@@ -1,5 +1,6 @@
 #include "service_napi.h"
 #include "include/hgs/service.h"
+#include <charconv>
 #include <cmath>
 #include <mutex>
 #include <memory>
@@ -234,6 +235,22 @@ napi_value Environment(napi_env env, napi_callback_info info) {
     napi_set_named_property(env, o, "unset", unset);
     napi_set_named_property(env, o, "inheritedFds", Array(env, 0)); return o;
 }
+napi_value BindSurface(napi_env env, napi_callback_info info) {
+    size_t argc = 4;
+    napi_value args[4];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    std::string window, surface, epoch;
+    bool attach;
+    if (argc != 4 || !ReadString(env, args[0], window) || window.empty() ||
+        !ReadString(env, args[1], surface) || !Bool(env, args[2], attach) ||
+        !ReadString(env, args[3], epoch) || epoch.empty())
+        return Throw(env, "window ID, surface ID, attach flag and session epoch required");
+    uint64_t id = 0;
+    const auto parsed = std::from_chars(surface.data(), surface.data() + surface.size(), id);
+    if (parsed.ec != std::errc{} || parsed.ptr != surface.data() + surface.size() || !id)
+        return Throw(env, "invalid OHOS surface ID");
+    return Boolean(env, DefaultRuntime().BindSurface(window, id, attach, epoch));
+}
 napi_value Send(napi_env env, napi_callback_info info) {
     size_t argc = 3; napi_value args[3]; napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
     std::string window, kind, epoch;
@@ -313,6 +330,7 @@ void RegisterServiceNapi(napi_env env, napi_value exports) {
         {"serviceWindows", nullptr, Windows, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"serviceClientEnvironment", nullptr, Environment, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"serviceSendInput", nullptr, Send, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"serviceBindSurface", nullptr, BindSurface, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setServiceEventCallback", nullptr, SetCallback, nullptr, nullptr, nullptr, napi_default, nullptr},
     };
     napi_define_properties(env, exports, sizeof(properties) / sizeof(properties[0]), properties);
