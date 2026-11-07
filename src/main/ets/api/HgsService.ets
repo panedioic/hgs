@@ -42,6 +42,7 @@ export class HgsService {
   private static instance: HgsService | null = null;
   private listeners: Map<number, (event: HgsServiceEvent) => void> = new Map();
   private nextListener: number = 0;
+  private lifecycle: Promise<void> = Promise.resolve();
 
   private constructor() {
     hgsNapi.setServiceEventCallback((event: HgsServiceEvent): void => {
@@ -61,13 +62,23 @@ export class HgsService {
 
   /** Resolves once the listener and logical output exist; no canvas/client required. */
   async start(options: HgsServiceOptions): Promise<HgsSession> {
-    const result = hgsNapi.serviceStart(options);
-    if (!result.ok) throw new HgsStartError(result.error);
-    return new HgsSession(result.session);
+    const pending = this.lifecycle.then(async (): Promise<HgsSession> => {
+      const result = await hgsNapi.serviceStartAsync(options);
+      if (!result.ok) throw new HgsStartError(result.error);
+      return new HgsSession(result.session);
+    });
+    this.lifecycle = pending.then((): void => {}, (): void => {});
+    return pending;
   }
 
   /** Completes after the backend event loop and owned clients have stopped. */
-  async stop(): Promise<void> { hgsNapi.serviceStop(); }
+  async stop(): Promise<void> {
+    const pending = this.lifecycle.then(async (): Promise<void> => {
+      await hgsNapi.serviceStopAsync();
+    });
+    this.lifecycle = pending.then((): void => {}, (): void => {});
+    return pending;
+  }
 
   inspect(): HgsServiceSnapshot { return hgsNapi.serviceInspect(); }
 

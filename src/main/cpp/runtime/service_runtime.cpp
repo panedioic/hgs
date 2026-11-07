@@ -21,7 +21,8 @@ bool SameConfig(const Config& a, const Config& b) {
         const auto& w = c;
         return std::make_tuple(c.protocols, c.runtimeDir, c.waylandSocket,
             w.output.width, w.output.height, w.output.refreshMilliHz, w.output.scale,
-            w.composition, w.inputBackend, w.setProcessEnvironment);
+            w.composition, w.inputBackend, w.setProcessEnvironment,
+            c.x11.xkbRoot, c.x11.keymapPath, c.x11.startupTimeoutMs);
     };
     return values(a) == values(b) && features(a.legacyWaylandFeatures) == features(b.legacyWaylandFeatures);
 }
@@ -82,22 +83,35 @@ struct Runtime::Impl {
             if (epoch != snapshot.epoch ||
                 (snapshot.state != State::Starting && snapshot.state != State::Ready &&
                  !(snapshot.state == State::Stopping && event.kind == EventKind::Destroyed))) return;
-            auto& origin = event.window.origin;
-            // A backend cannot publish another backend's identity.
-            if (origin.epoch != epoch || origin.backendId != backendId || origin.protocol != protocol) return;
-            std::optional<WindowSnapshot> window;
-            switch (event.kind) {
-                case EventKind::Created: window = registry.Create(event.window); break;
-                case EventKind::Changed: window = registry.Update(event.window); break;
-                case EventKind::Destroyed: window = registry.Remove(origin); break;
-                case EventKind::CloseRequested: window = registry.Find(origin); break;
-                default: return;
+            if (event.kind == EventKind::BackendDisconnected) {
+                snapshot.lastError = {ErrorCode::BackendFailed, backendId, event.detail};
+                auto& endpoints = snapshot.endpoints;
+                endpoints.erase(std::remove_if(endpoints.begin(), endpoints.end(), [&](const Endpoint& ep) {
+                    return ep.backendId == backendId && ep.protocol == protocol;
+                }), endpoints.end());
+                if (snapshot.state == State::Ready && endpoints.empty()) snapshot.state = State::Failed;
+                event.origin = backendId;
+                event.epoch = epoch;
+                event.state = snapshot.state;
+                event.serial = ++nextSerial;
+            } else {
+                auto& origin = event.window.origin;
+                // A backend cannot publish another backend's identity.
+                if (origin.epoch != epoch || origin.backendId != backendId || origin.protocol != protocol) return;
+                std::optional<WindowSnapshot> window;
+                switch (event.kind) {
+                    case EventKind::Created: window = registry.Create(event.window); break;
+                    case EventKind::Changed: window = registry.Update(event.window); break;
+                    case EventKind::Destroyed: window = registry.Remove(origin); break;
+                    case EventKind::CloseRequested: window = registry.Find(origin); break;
+                    default: return;
+                }
+                if (!window) return;
+                event.window = *window;
+                event.epoch = epoch;
+                event.state = snapshot.state;
+                event.serial = ++nextSerial;
             }
-            if (!window) return;
-            event.window = *window;
-            event.epoch = epoch;
-            event.state = snapshot.state;
-            event.serial = ++nextSerial;
         }
         events.Publish(event);
     }
@@ -123,8 +137,13 @@ StartResult Runtime::Start(const Config& requested) {
     {
         std::lock_guard<std::mutex> lock(p.mutex);
         if (p.snapshot.state == State::Ready) {
-            if (valid && SameConfig(c, p.config)) return {true, p.snapshot, {}};
+            if (valid && SameConfig(c, p.config)) {
+                return {p.snapshot.lastError.code == ErrorCode::None, p.snapshot, p.snapshot.lastError};
+            }
             return {false, p.snapshot, {ErrorCode::ConfigConflict, "config", "stop the active runtime before changing configuration"}};
+        }
+        if (!p.active.empty()) {
+            return {false, p.snapshot, {ErrorCode::ConfigConflict, "runtime", "stop the failed runtime before restarting"}};
         }
         if (!valid) error = {ErrorCode::InvalidConfig, "config", "invalid endpoint, output, protocol or input configuration"};
         else {
@@ -149,6 +168,21 @@ StartResult Runtime::Start(const Config& requested) {
     if (error.code != ErrorCode::None) return {false, Inspect(), error};
     std::vector<Endpoint> endpoints;
     const Epoch epoch = Inspect().epoch;
+    const auto rollback = [&]() -> StartResult {
+        { std::lock_guard<std::mutex> lock(p.mutex); p.snapshot.state = State::Stopping; }
+        p.StateEvent();
+        for (auto it = p.active.rbegin(); it != p.active.rend(); ++it) (*it)->Stop();
+        p.input.Reset();
+        p.ForgetWindows();
+        {
+            std::lock_guard<std::mutex> lock(p.mutex);
+            p.active.clear();
+            p.snapshot.state = State::Failed;
+            p.snapshot.lastError = error;
+        }
+        p.StateEvent();
+        return {false, Inspect(), error};
+    };
     for (auto* backend : selected) {
         // active is written only under the control mutex; Send holds that mutex.
         { std::lock_guard<std::mutex> lock(p.mutex); p.active.push_back(backend); }
@@ -158,23 +192,20 @@ StartResult Runtime::Start(const Config& requested) {
         if (!ok || !endpoint.logicalOutputReady || endpoint.address.empty() ||
             endpoint.protocol != backend->GetProtocol() || endpoint.backendId != backend->Id()) {
             if (error.code == ErrorCode::None) error = {ErrorCode::BackendFailed, "endpoint", "backend did not publish a ready endpoint and logical output"};
-            { std::lock_guard<std::mutex> lock(p.mutex); p.snapshot.state = State::Stopping; }
-            p.StateEvent();
-            for (auto it = p.active.rbegin(); it != p.active.rend(); ++it) (*it)->Stop();
-            p.input.Reset(); p.ForgetWindows();
-            {
-                std::lock_guard<std::mutex> lock(p.mutex);
-                p.active.clear(); p.snapshot.state = State::Failed; p.snapshot.lastError = error;
-            }
-            p.StateEvent();
-            return {false, Inspect(), error};
+            return rollback();
         }
         endpoints.push_back(std::move(endpoint));
     }
     {
         std::lock_guard<std::mutex> lock(p.mutex);
-        p.snapshot.endpoints = std::move(endpoints); p.snapshot.state = State::Ready;
+        if (p.snapshot.lastError.code != ErrorCode::None) {
+            error = p.snapshot.lastError;
+        } else {
+            p.snapshot.endpoints = std::move(endpoints);
+            p.snapshot.state = State::Ready;
+        }
     }
+    if (error.code != ErrorCode::None) return rollback();
     p.StateEvent();
     return {true, Inspect(), {}};
 }
@@ -205,8 +236,10 @@ ClientEnvironment Runtime::Environment(Protocol protocol, Error& error, const st
     if (impl_->snapshot.state == State::Ready) for (const auto& ep : impl_->snapshot.endpoints) {
         if (ep.protocol != protocol) continue;
         if (protocol == Protocol::Wayland) return {{{"XDG_RUNTIME_DIR", ep.runtimeDir}, {"WAYLAND_DISPLAY", ep.address}}, {"DISPLAY", "WAYLAND_SOCKET"}, {}};
-        // X11 backend adds actual authentication / XIM variables in P2.
-        return {{{"DISPLAY", ep.address}}, {"WAYLAND_DISPLAY", "WAYLAND_SOCKET", "XAUTHORITY", "XMODIFIERS"}, {}};
+        ClientEnvironment environment{{{"DISPLAY", ep.address}}, {"WAYLAND_DISPLAY", "WAYLAND_SOCKET", "XMODIFIERS"}, {}};
+        if (ep.authorityPath.empty()) environment.unset.push_back("XAUTHORITY");
+        else environment.set.push_back({"XAUTHORITY", ep.authorityPath});
+        return environment;
     }
     error = {ErrorCode::NotReady, "environment", "requested protocol has no ready endpoint"};
     return {};

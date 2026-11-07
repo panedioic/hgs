@@ -25,7 +25,12 @@ if(DEFINED PACKAGE_FIND_FILE)
 endif()
 
 # 预编译 wayland-server
+option(HGS_BUILD_X11 "Build the optional OHOS Xwayland backend" OFF)
+set(HGS_X11_DEPS_ROOT "" CACHE PATH "ARM64 OHOS wlroots and Xwayland SDK prefix")
 set(WAYLAND_LIBS_DIR ${NATIVERENDER_ROOT_PATH}/../../../libs/${OHOS_ARCH})
+if(HGS_BUILD_X11)
+    set(WAYLAND_LIBS_DIR "${HGS_X11_DEPS_ROOT}/lib")
+endif()
 
 add_library(hgs SHARED
     napi_init.cpp
@@ -133,3 +138,45 @@ target_link_libraries(smoke_napi PRIVATE
     libace_napi.z.so
     libhilog_ndk.z.so
 )
+
+if(HGS_BUILD_X11)
+    set(HGS_X11_LIB "${HGS_X11_DEPS_ROOT}/lib")
+    set(HGS_X11_INCLUDE "${HGS_X11_DEPS_ROOT}/include")
+    if(NOT EXISTS "${HGS_X11_LIB}/libwlroots-0.20.a" OR
+       NOT EXISTS "${HGS_X11_INCLUDE}/wlroots-0.20/wlr/xwayland/xwayland.h" OR
+       NOT EXISTS "${HGS_X11_LIB}/libxwayland_ohos.so")
+        message(FATAL_ERROR "HGS_BUILD_X11 requires a staged OHOS wlroots 0.20.2 and Xwayland SDK")
+    endif()
+    add_library(hgs_xwayland_session OBJECT backends/xwayland/runtime/session.c)
+    set_target_properties(hgs_xwayland_session PROPERTIES POSITION_INDEPENDENT_CODE ON)
+    target_compile_definitions(hgs_xwayland_session PRIVATE WLR_USE_UNSTABLE _GNU_SOURCE)
+    target_sources(hgs PRIVATE
+        backends/xwayland/xwayland_backend.cpp
+        $<TARGET_OBJECTS:hgs_xwayland_session>
+        backends/xwayland/runtime/x11_endpoint.cpp
+        platform/ohos/process/xwayland_process.cpp
+    )
+    target_compile_definitions(hgs PRIVATE HGS_BUILD_X11)
+    target_include_directories(hgs_xwayland_session BEFORE PRIVATE
+        "${HGS_X11_INCLUDE}"
+        "${HGS_X11_INCLUDE}/wlroots-0.20"
+        "${HGS_X11_INCLUDE}/pixman-1"
+    )
+    target_link_libraries(hgs PRIVATE
+        "${HGS_X11_LIB}/libwlroots-0.20.a"
+        "${HGS_X11_LIB}/libwayland-client.so.0"
+        "${HGS_X11_LIB}/libxkbcommon.so.0"
+        "${HGS_X11_LIB}/libpixman-1.so.0"
+        "${HGS_X11_LIB}/libdrm.so.2"
+        "${HGS_X11_LIB}/libxcb.so.1"
+        "${HGS_X11_LIB}/libxcb-composite.so.0"
+        "${HGS_X11_LIB}/libxcb-ewmh.so.2"
+        "${HGS_X11_LIB}/libxcb-icccm.so.4"
+        "${HGS_X11_LIB}/libxcb-render.so.0"
+        "${HGS_X11_LIB}/libxcb-res.so.0"
+        "${HGS_X11_LIB}/libxcb-xfixes.so.0"
+        libchild_process.so
+    )
+    add_library(hgs_xwayland_child SHARED platform/ohos/process/xwayland_child.cpp)
+    target_link_libraries(hgs_xwayland_child PRIVATE libhilog_ndk.z.so)
+endif()

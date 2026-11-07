@@ -11,12 +11,17 @@ enum class Protocol { Wayland, X11 };
 enum class Protocols { Wayland, X11, Both };
 enum class State { Stopped, Starting, Ready, Stopping, Failed };
 enum class ErrorCode { None, InvalidConfig, UnsupportedProtocol, ConfigConflict, BackendFailed, NotReady, StaleWindow };
-enum class EventKind { StateChanged, Created, Changed, Destroyed, CloseRequested };
+enum class EventKind { StateChanged, Created, Changed, Destroyed, CloseRequested, BackendDisconnected };
 
 struct Error {
     ErrorCode code = ErrorCode::None;
     std::string stage;
     std::string message;
+};
+struct X11Options {
+    std::string xkbRoot;
+    std::string keymapPath;
+    int32_t startupTimeoutMs = 5000;
 };
 struct Config {
     Protocols protocols = Protocols::Wayland;
@@ -28,6 +33,7 @@ struct Config {
     bool setProcessEnvironment = false;
     // 仅供 v1 配置兼容；公共服务的输出、输入与生命周期不属于某个后端。
     FeatureConfig legacyWaylandFeatures;
+    X11Options x11;
 };
 struct Endpoint {
     Protocol protocol = Protocol::Wayland;
@@ -37,6 +43,7 @@ struct Endpoint {
     std::string socketPath;
     bool logicalOutputReady = false;
     int32_t outputWidth = 0, outputHeight = 0;
+    std::string authorityPath{};
 };
 struct Capabilities {
     bool wayland = false;
@@ -63,7 +70,9 @@ struct Snapshot {
 struct StartResult { bool ok = false; Snapshot session; Error error; };
 
 // Protocol-native identity never crosses into a numeric ArkTS WindowId.
-// clientId identifies a connection, not a PID. objectGeneration handles reuse.
+// clientId identifies an observed connection generation, independent of PID.
+// X11 tracks each resource slot while its window objects exist. objectGeneration
+// also distinguishes a native object that was unmapped and then mapped again.
 struct WindowOrigin {
     Epoch epoch = 0;
     std::string backendId;

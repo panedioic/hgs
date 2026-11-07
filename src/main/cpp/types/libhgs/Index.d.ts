@@ -223,10 +223,16 @@ export const dumpWindowLayout: (displayId?: number) => void;
 
 // Protocol-neutral service API, API 1.1. X11/both report unsupported-protocol
 // until an Xwayland backend is built. All 64-bit identities are decimal strings.
+export interface HgsX11Options {
+  xkbRoot: string;
+  keymapPath: string;
+  startupTimeoutMs?: number;
+}
 export interface HgsServiceOptions {
   protocols?: 'wayland' | 'x11' | 'both';
   runtimeDir: string;
   wayland?: HgsWaylandOptions;
+  x11?: HgsX11Options;
   composition?: 'preserve' | 'per-window' | 'desktop-root';
   inputBackend?: 'auto' | 'arkts' | 'native';
   output?: HgsOutputConfig;
@@ -241,6 +247,7 @@ export interface HgsCapabilities {
 export interface HgsEndpoint {
   protocol: string; backendId: string; runtimeDir: string; address: string;
   socketPath: string; logicalOutputReady: boolean; outputWidth: number; outputHeight: number;
+  authorityPath: string;
 }
 export interface HgsServiceSnapshot {
   state: string; epoch: string; capabilities: HgsCapabilities;
@@ -272,6 +279,8 @@ export interface HgsServiceInput {
 }
 export const serviceStart: (options: HgsServiceOptions) => HgsServiceStartResult;
 export const serviceStop: () => boolean;
+export const serviceStartAsync: (options: HgsServiceOptions) => Promise<HgsServiceStartResult>;
+export const serviceStopAsync: () => Promise<boolean>;
 export const serviceInspect: () => HgsServiceSnapshot;
 export const serviceWindows: (epoch?: string) => HgsServiceWindow[];
 export const serviceClientEnvironment: (protocol: string, epoch: string) => HgsClientEnvironment;

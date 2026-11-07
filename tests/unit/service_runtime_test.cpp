@@ -115,6 +115,25 @@ int main() {
             assert(atomic.Send(w.id, input));
         }
         assert(ap->inputs.size() == 1 && bp->inputs.size() == 1);
+
+        Event lost;
+        lost.kind = EventKind::Destroyed;
+        lost.window = bp->inputs.front();
+        bp->sink(lost);
+        lost = {};
+        lost.kind = EventKind::BackendDisconnected;
+        lost.detail = "Xwayland process exited";
+        bp->sink(lost);
+        const auto remaining = atomic.Inspect();
+        assert(remaining.state == State::Ready && remaining.endpoints.size() == 1);
+        assert(remaining.endpoints.front().protocol == Protocol::Wayland);
+        assert(remaining.lastError.code == ErrorCode::BackendFailed);
+        assert(atomic.Windows().size() == 1);
+        assert(atomic.Environment(Protocol::X11, error).set.empty() && error.code == ErrorCode::NotReady);
+        assert(!atomic.Environment(Protocol::Wayland, error).set.empty() && error.code == ErrorCode::None);
+        assert(!atomic.Start(config).ok);
+        atomic.Stop();
+        assert(atomic.Start(config).ok);
     }
     {
         EventBus bus; int calls = 0; uint64_t token = 0;

@@ -3,6 +3,7 @@
 #include <cmath>
 #include <mutex>
 #include <memory>
+#include <optional>
 
 namespace hgs::service {
 namespace {
@@ -73,6 +74,7 @@ napi_value SnapshotObject(napi_env env, const Snapshot& s) {
         const auto& e = s.endpoints[i]; auto ep = Object(env);
         Put(env, ep, "protocol", e.protocol == Protocol::Wayland ? "wayland" : "x11"); Put(env, ep, "backendId", e.backendId);
         Put(env, ep, "runtimeDir", e.runtimeDir); Put(env, ep, "address", e.address); Put(env, ep, "socketPath", e.socketPath);
+        Put(env, ep, "authorityPath", e.authorityPath);
         Put(env, ep, "logicalOutputReady", e.logicalOutputReady); Put(env, ep, "outputWidth", static_cast<double>(e.outputWidth)); Put(env, ep, "outputHeight", static_cast<double>(e.outputHeight));
         napi_set_element(env, endpoints, i, ep);
     }
@@ -94,7 +96,8 @@ napi_value WindowObject(napi_env env, const WindowSnapshot& w) {
 }
 const char* EventName(EventKind k) {
     switch (k) { case EventKind::StateChanged: return "state-changed"; case EventKind::Created: return "created";
-        case EventKind::Changed: return "changed"; case EventKind::Destroyed: return "destroyed"; case EventKind::CloseRequested: return "close-requested"; }
+        case EventKind::Changed: return "changed"; case EventKind::Destroyed: return "destroyed"; case EventKind::CloseRequested: return "close-requested";
+        case EventKind::BackendDisconnected: return "backend-disconnected"; }
     return "changed";
 }
 napi_value EventObject(napi_env env, const Event& e) {
@@ -102,7 +105,54 @@ napi_value EventObject(napi_env env, const Event& e) {
     Put(env, o, "state", StateName(e.state)); Put(env, o, "origin", e.origin); Put(env, o, "detail", e.detail);
     napi_set_named_property(env, o, "window", WindowObject(env, e.window)); return o;
 }
-napi_value Start(napi_env env, napi_callback_info info) {
+napi_value StartResultObject(napi_env env, const StartResult& result) {
+    auto value = Object(env);
+    Put(env, value, "ok", result.ok);
+    napi_set_named_property(env, value, "session", SnapshotObject(env, result.session));
+    napi_set_named_property(env, value, "error", ErrorObject(env, result.error));
+    return value;
+}
+struct ServiceWork {
+    napi_async_work work = nullptr;
+    napi_deferred deferred = nullptr;
+    std::optional<Config> start;
+    StartResult result;
+};
+napi_value QueueServiceWork(napi_env env, std::optional<Config> start) {
+    auto job = std::make_unique<ServiceWork>();
+    job->start = std::move(start);
+    napi_value promise;
+    if (napi_create_promise(env, &job->deferred, &promise) != napi_ok) return nullptr;
+    const auto execute = [](napi_env, void* data) {
+        auto& job = *static_cast<ServiceWork*>(data);
+        if (job.start) job.result = DefaultRuntime().Start(*job.start);
+        else DefaultRuntime().Stop();
+    };
+    const auto complete = [](napi_env env, napi_status status, void* data) {
+        std::unique_ptr<ServiceWork> job(static_cast<ServiceWork*>(data));
+        if (status == napi_ok) {
+            const auto result = job->start ? StartResultObject(env, job->result) : Boolean(env, true);
+            napi_resolve_deferred(env, job->deferred, result);
+        } else {
+            napi_value error;
+            napi_create_error(env, nullptr, String(env, "HGS lifecycle work was cancelled"), &error);
+            napi_reject_deferred(env, job->deferred, error);
+        }
+        napi_delete_async_work(env, job->work);
+    };
+    auto name = String(env, job->start ? "HgsServiceStart" : "HgsServiceStop");
+    if (napi_create_async_work(env, nullptr, name, execute, complete, job.get(), &job->work) != napi_ok ||
+        napi_queue_async_work(env, job->work) != napi_ok) {
+        if (job->work) napi_delete_async_work(env, job->work);
+        napi_value error;
+        napi_create_error(env, nullptr, String(env, "could not queue HGS lifecycle work"), &error);
+        napi_reject_deferred(env, job->deferred, error);
+        return promise;
+    }
+    job.release();
+    return promise;
+}
+napi_value StartCommon(napi_env env, napi_callback_info info, bool asynchronous) {
     size_t argc = 1; napi_value args[1]; napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
     if (argc != 1 || !IsObject(env, args[0])) return Throw(env, "serviceStart requires an options object");
     Config config; auto o = args[0]; std::string protocols = "wayland", composition = "preserve", input = "auto";
@@ -123,6 +173,21 @@ napi_value Start(napi_env env, napi_callback_info info) {
         auto wl = Property(env, o, "wayland");
         if (!IsObject(env, wl) || !OptionalString(env, wl, "socketName", config.waylandSocket)) return Throw(env, "invalid wayland socketName");
     }
+    if (Has(env, o, "x11")) {
+        auto x11 = Property(env, o, "x11");
+        if (!IsObject(env, x11) || !OptionalString(env, x11, "xkbRoot", config.x11.xkbRoot) ||
+            !OptionalString(env, x11, "keymapPath", config.x11.keymapPath)) {
+            return Throw(env, "invalid X11 resource paths");
+        }
+        if (Has(env, x11, "startupTimeoutMs")) {
+            double timeout;
+            if (!Number(env, Property(env, x11, "startupTimeoutMs"), timeout) ||
+                timeout < 100 || timeout > 30000 || timeout != std::floor(timeout)) {
+                return Throw(env, "X11 startupTimeoutMs must be an integer from 100 to 30000");
+            }
+            config.x11.startupTimeoutMs = static_cast<int32_t>(timeout);
+        }
+    }
     if (Has(env, o, "output")) {
         auto output = Property(env, o, "output"); if (!IsObject(env, output)) return Throw(env, "invalid output");
         for (const char* key : {"width", "height", "refreshMilliHz", "scale"}) {
@@ -138,11 +203,12 @@ napi_value Start(napi_env env, napi_callback_info info) {
             }
         }
     }
-    const auto result = DefaultRuntime().Start(config);
-    auto value = Object(env); Put(env, value, "ok", result.ok);
-    napi_set_named_property(env, value, "session", SnapshotObject(env, result.session));
-    napi_set_named_property(env, value, "error", ErrorObject(env, result.error)); return value;
+    if (asynchronous) return QueueServiceWork(env, std::move(config));
+    return StartResultObject(env, DefaultRuntime().Start(config));
 }
+napi_value Start(napi_env env, napi_callback_info info) { return StartCommon(env, info, false); }
+napi_value StartAsync(napi_env env, napi_callback_info info) { return StartCommon(env, info, true); }
+napi_value StopAsync(napi_env env, napi_callback_info) { return QueueServiceWork(env, std::nullopt); }
 napi_value Stop(napi_env env, napi_callback_info) { DefaultRuntime().Stop(); return Boolean(env, true); }
 napi_value Inspect(napi_env env, napi_callback_info) { return SnapshotObject(env, DefaultRuntime().Inspect()); }
 napi_value Windows(napi_env env, napi_callback_info info) {
@@ -241,6 +307,8 @@ void RegisterServiceNapi(napi_env env, napi_value exports) {
     napi_property_descriptor properties[] = {
         {"serviceStart", nullptr, Start, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"serviceStop", nullptr, Stop, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"serviceStartAsync", nullptr, StartAsync, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"serviceStopAsync", nullptr, StopAsync, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"serviceInspect", nullptr, Inspect, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"serviceWindows", nullptr, Windows, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"serviceClientEnvironment", nullptr, Environment, nullptr, nullptr, nullptr, napi_default, nullptr},
