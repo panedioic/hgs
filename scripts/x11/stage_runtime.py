@@ -32,10 +32,12 @@ def main() -> None:
     parser.add_argument("--lib-dir", action="append", type=Path, required=True)
     parser.add_argument("--root-library", action="append", type=Path, required=True,
                         help="already-built HAP library used to discover NEEDED entries")
+    parser.add_argument("--dlopen-library", action="append", default=[],
+                        help="additional SONAME loaded by the host at runtime")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
 
-    pending = [("libxwayland_ohos.so", True)]
+    pending = [(name, True) for name in ["libxwayland_ohos.so", *args.dlopen_library]]
     for root in args.root_library:
         _, deps = elf_info(args.readelf, root)
         pending.extend((dep, False) for dep in deps)
