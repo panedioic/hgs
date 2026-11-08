@@ -2,12 +2,12 @@
 # pack_xkb_data.sh — 打包 xkb 资源 (xkeyboard-config) 到 HAR 的 rawfile
 #
 # 产物: $ROOT/src/main/resources/rawfile/tools/xkb-data.tar
-#   tar 内容 = usr/share/x11/xkb/{compat,geometry,keycodes,rules,symbols,types}
+#   tar 内容 = usr/share/X11/xkb/{compat,geometry,keycodes,rules,symbols,types}
 #
 # 宿主用法 (BetterSH/WineHua/HarmonyBox 都一样):
 #   unpackResource('tools/xkb-data.tar', sysroot)
-#   XKB_CONFIG_ROOT=$sysroot/usr/share/x11/xkb      # 必须指到 xkb 目录本身
-#   (libxkbcommon 只认这个变量指到的目录下有 rules/, 指到 usr/share/x11 会
+#   XKB_CONFIG_ROOT=$sysroot/usr/share/X11/xkb      # 必须指到 xkb 目录本身
+#   (libxkbcommon 只认这个变量指到的目录下有 rules/, 指到 usr/share/X11 会
 #    xkb_context_ref(NULL) → SIGSEGV, 真机踩过)
 #
 # 为什么排除 rules/xorg*: 它们是 xkeyboard-config 里指向 base* 的符号链接,
@@ -83,16 +83,16 @@ if [ ! -e "$SRC/usr/share/X11/xkb/rules/evdev.xml" ]; then
 fi
 [ -e "$SRC/usr/share/X11/xkb/rules/evdev.xml" ] || err "解包后缺 rules/evdev.xml: $SRC"
 
-# ── 2. 摆成设备侧 FHS 结构 (usr/share/x11/xkb) ──────────────
-# 包内是大写 X11, 设备侧统一小写 (FHS 惯例; XKB_CONFIG_ROOT 指过去)
+# ── 2. 摆成设备侧 FHS 结构 (usr/share/X11/xkb，标准大写，与一般 Linux 一致) ──
+# 包内与设备侧统一为标准的大写 X11 (FHS 惯例; XKB_CONFIG_ROOT 指过去)
 if [ "$FORCE" = "1" ] || [ ! -e "$OUT" ] || [ "$SRC" -nt "$OUT" ]; then
-    rm -rf "$STAGE"; mkdir -p "$STAGE/usr/share/x11"
-    cp -a "$SRC/usr/share/X11/xkb" "$STAGE/usr/share/x11/xkb"
+    rm -rf "$STAGE"; mkdir -p "$STAGE/usr/share/X11"
+    cp -a "$SRC/usr/share/X11/xkb" "$STAGE/usr/share/X11/xkb"
 
     # 符号链接清一遍 (见文件头: 沙箱解包会 EPERM)
     find "$STAGE" -type l -delete
     # 个别包里 base 规则被 symlink 删没了就补一份实体 —— 先确认还剩什么
-    [ -e "$STAGE/usr/share/x11/xkb/rules/evdev" ] || warn "rules/evdev 缺失 (检查 xkeyboard-config 版本)"
+    [ -e "$STAGE/usr/share/X11/xkb/rules/evdev" ] || warn "rules/evdev 缺失 (检查 xkeyboard-config 版本)"
 
     log "打包 → $OUT"
     tar -cf "$OUT" --exclude='xkb/rules/xorg*' -C "$STAGE" usr
@@ -106,9 +106,9 @@ fi
 LIST="$(mktemp)"
 trap 'rm -f "$LIST"' EXIT
 tar -tf "$OUT" > "$LIST"
-grep -qx 'usr/share/x11/xkb/rules/evdev.xml' "$LIST" || err "产物里没有 rules/evdev.xml: $OUT"
-grep -qx 'usr/share/x11/xkb/symbols/us'      "$LIST" || err "产物里没有 symbols/us: $OUT"
+grep -qx 'usr/share/X11/xkb/rules/evdev.xml' "$LIST" || err "产物里没有 rules/evdev.xml: $OUT"
+grep -qx 'usr/share/X11/xkb/symbols/us'      "$LIST" || err "产物里没有 symbols/us: $OUT"
 n="$(wc -l < "$LIST")"
 size="$(du -h "$OUT" | cut -f1)"
 log "完成: $OUT ($n 个条目, $size)"
-log "宿主用法: unpackResource('tools/xkb-data.tar', sysroot) → XKB_CONFIG_ROOT=\$sysroot/usr/share/x11/xkb"
+log "宿主用法: unpackResource('tools/xkb-data.tar', sysroot) → XKB_CONFIG_ROOT=\$sysroot/usr/share/X11/xkb"
