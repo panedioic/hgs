@@ -23,6 +23,7 @@ export default class HgsAppWindowAbility extends UIAbility {
   protected title: string = '';
   protected contentW: number = 0;
   protected contentH: number = 0;
+  private serviceEpoch: string = '';
 
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     const params: Record<string, Object> = (want.parameters ?? {}) as Record<string, Object>;
@@ -30,13 +31,19 @@ export default class HgsAppWindowAbility extends UIAbility {
     this.title = (params.title as string) ?? '';
     this.contentW = Number(params.w ?? 0);
     this.contentH = Number(params.h ?? 0);
+    this.serviceEpoch = (params.hgsServiceEpoch as string) ?? '';
     hgs.LOGI(`[${TAG}] onCreate tl=${this.toplevelId} title=${this.title} ${this.contentW}x${this.contentH}`);
-    if (this.toplevelId > 0) {
+    if (!this.serviceEpoch && this.toplevelId > 0) {
       hgs.setPendingToplevel(this.toplevelId);
     }
   }
 
   async onWindowStageCreate(stage: window.WindowStage): Promise<void> {
+    const host = HgsWindowHostService.getInstance();
+    if (this.serviceEpoch && !host.ownsServiceWaylandWindow(this.toplevelId, this.serviceEpoch)) {
+      await this.context.terminateSelf();
+      return;
+    }
     const mainWin: window.Window = stage.getMainWindowSync();
     // ── 显示前配置 (loadContent 之前): ──
     // 1. 窗口模式 (可选): floatingOnly=true 时声明 FLOATING-only (stage API,
@@ -75,16 +82,21 @@ export default class HgsAppWindowAbility extends UIAbility {
       hgs.LOGW(`[${TAG}] setWindowDecorVisible(pre-show): ${JSON.stringify(e)}`);
     }
     try {
-      await stage.loadContent(HgsWindowHostService.getInstance().pageUrl(), null);
+      const storage = this.serviceEpoch ? new LocalStorage() : null;
+      storage?.setOrCreate<number>('hgsWaylandToplevelId', this.toplevelId);
+      await stage.loadContent(host.pageUrl(), storage);
     } catch (e) {
       const err = e as BusinessError;
       hgs.LOGE(`[${TAG}] loadContent failed tl=${this.toplevelId}: ${JSON.stringify(err)}`);
       hgs.notifyWindowClosed(this.toplevelId);
       return;
     }
+    if (this.serviceEpoch && !host.ownsServiceWaylandWindow(this.toplevelId, this.serviceEpoch)) {
+      await this.context.terminateSelf();
+      return;
+    }
     try {
-      HgsWindowHostService.getInstance().attachWindow(
-        this.toplevelId, mainWin, this.context);
+      host.attachWindow(this.toplevelId, mainWin, this.context);
     } catch (e) {
       const err = e as BusinessError;
       hgs.LOGE(`[${TAG}] attachWindow failed tl=${this.toplevelId}: ${JSON.stringify(err)}`);
@@ -94,9 +106,10 @@ export default class HgsAppWindowAbility extends UIAbility {
 
   onWindowStageDestroy(): void {
     // 窗口被销毁: 通知 core 回滚并请求客户端关闭 (core 主动销毁时幂等)
-    if (this.toplevelId > 0) {
+    const host = HgsWindowHostService.getInstance();
+    if (this.toplevelId > 0 && (!this.serviceEpoch || host.ownsServiceWaylandWindow(this.toplevelId, this.serviceEpoch))) {
       hgs.closeToplevel(this.toplevelId);
-      HgsWindowHostService.getInstance().detachWindow(this.toplevelId);
+      host.detachWindow(this.toplevelId);
     }
   }
 }

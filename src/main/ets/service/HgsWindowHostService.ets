@@ -18,7 +18,10 @@
 import { window, display } from '@kit.ArkUI';
 import { common, Want } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
-import hgs, { HgsStartConfig } from 'libhgs.so';
+import hgs, { HgsEndpoint, HgsServiceOptions, HgsServiceWindow, HgsStartConfig,
+  HgsWindowControl } from 'libhgs.so';
+import { HgsService, HgsSession } from '../api/HgsService';
+import { HgsServiceWindowHost } from './HgsServiceWindowHost';
 
 const TAG = 'HGS_WinHost';
 
@@ -44,6 +47,7 @@ const ST_FULLSCREEN = 3;
 export interface HgsWindowHostOptions {
   abilityName?: string;   // 默认 'HgsAppWindowAbility'
   pageUrl?: string;       // 默认 'pages/HgsWindowPage' (宿主 main_pages.json 注册)
+  servicePageUrl?: string; // 默认 'pages/HgsServiceWindow' (X11 包装页)
   windowScale?: number;   // 逻辑尺寸 → OHOS 窗口尺寸; 默认 1, BetterSH 可设 2
   decorVisible?: boolean; // OHOS 系统标题栏可见性; 默认 false
   /**
@@ -146,6 +150,20 @@ export class HgsWindowHostService {
     return HgsWindowHostService.getInstance().start(options);
   }
 
+  /** Start the selected listeners and attach their per-window presentation to this stage. */
+  static async startService(stage: window.WindowStage, options: HgsServiceOptions): Promise<HgsSession> {
+    return HgsWindowHostService.getInstance().startService(stage, options);
+  }
+
+  static async stopService(): Promise<void> {
+    const host = HgsWindowHostService.getInstance();
+    await HgsService.create().stop();
+    host.serviceHost?.stop();
+    host.serviceHost = null;
+    host.serviceSession = null;
+    host.serviceStage = null;
+  }
+
   static shutdown(): void {
     HgsWindowHostService.getInstance().windows.clear();
   }
@@ -153,6 +171,9 @@ export class HgsWindowHostService {
   private ctx: common.UIAbilityContext | null = null;
   private options: HgsWindowHostOptions = {};
   private windows: Map<number, WindowRecord> = new Map();
+  private serviceSession: HgsSession | null = null;
+  private serviceHost: HgsServiceWindowHost | null = null;
+  private serviceStage: window.WindowStage | null = null;
 
   private init(ctx: common.UIAbilityContext, options?: HgsWindowHostOptions): void {
     this.ctx = ctx;
@@ -161,6 +182,33 @@ export class HgsWindowHostService {
       this.onEvent(event as WindowEventLike);
     });
     hgs.LOGI(`[${TAG}] init: ability=${this.abilityName()} page=${this.pageUrl()} scale=${this.scale().toFixed(2)}`);
+  }
+
+  private async startService(stage: window.WindowStage, options: HgsServiceOptions): Promise<HgsSession> {
+    if (!this.ctx) throw new Error('HgsWindowHostService.init must precede startService');
+    if (options.composition === 'desktop-root') throw new Error('The default window host requires per-window composition');
+    const config: HgsServiceOptions = {
+      runtimeDir: options.runtimeDir,
+      protocols: options.protocols ?? 'wayland',
+      composition: 'per-window',
+      inputBackend: options.inputBackend ?? 'native',
+      setProcessEnvironment: options.setProcessEnvironment ?? false,
+    };
+    if (options.wayland !== undefined) config.wayland = options.wayland;
+    if (options.x11 !== undefined) config.x11 = options.x11;
+    if (options.output !== undefined) config.output = options.output;
+    const session = await HgsService.create().start(config);
+    if (this.serviceSession?.epoch === session.epoch && this.serviceStage === stage) return session;
+    this.serviceHost?.stop();
+    this.serviceHost = null;
+    this.serviceStage = stage;
+    this.serviceSession = session;
+    if (session.endpoints.some((endpoint: HgsEndpoint): boolean => endpoint.protocol === 'x11')) {
+      this.serviceHost = new HgsServiceWindowHost(session, stage,
+        this.options.servicePageUrl ?? 'pages/HgsServiceWindow', this.scale());
+      this.serviceHost.start();
+    }
+    return session;
   }
 
   /**
@@ -215,6 +263,10 @@ export class HgsWindowHostService {
     return s > 0 ? s : 1;
   }
 
+  ownsServiceWaylandWindow(toplevelId: number, epoch: string): boolean {
+    return this.serviceSession?.epoch === epoch && this.windows.has(toplevelId);
+  }
+
   /** 系统默认模式 (false) 或 FLOATING-only 几何自管 (true); 默认 false */
   floatingOnly(): boolean {
     return this.options.floatingOnly ?? false;
@@ -229,6 +281,7 @@ export class HgsWindowHostService {
     const rec = this.ensure(toplevelId);
     rec.win = win;
     rec.ctx = ctx;
+    if (this.serviceSession) this.observeWaylandHost(toplevelId, rec, win);
     if (rec.spec) {
       rec.state = rec.spec.state;
       if (rec.spec.state === ST_NORMAL) {
@@ -272,6 +325,22 @@ export class HgsWindowHostService {
       applyInitial();
     }, 300);
     hgs.LOGI(`[${TAG}] attach tl=${toplevelId} win=${win.getWindowProperties().id}`);
+  }
+
+  private observeWaylandHost(id: number, record: WindowRecord, host: window.Window): void {
+    const session = this.serviceSession;
+    if (!session) return;
+    const control = (request: HgsWindowControl): boolean => {
+      if (this.serviceSession !== session || this.windows.get(id) !== record || record.win !== host) return false;
+      const snapshot = session.windows().find((entry: HgsServiceWindow): boolean =>
+        entry.protocol === 'wayland' && entry.legacyId === id);
+      return snapshot !== undefined && session.controlWindow(snapshot.id, request);
+    };
+    host.on('windowEvent', (event: window.WindowEventType): void => {
+      if (event === window.WindowEventType.WINDOW_ACTIVE) control({ kind: 'focus' });
+      else if (event === window.WindowEventType.WINDOW_INACTIVE) control({ kind: 'blur' });
+    });
+    host.on('windowWillClose', async (): Promise<boolean> => control({ kind: 'close' }));
   }
 
   /** HgsAppWindowAbility.onWindowStageDestroy 调用。 */
@@ -403,6 +472,7 @@ export class HgsWindowHostService {
       'w': spec.width,
       'h': spec.height,
     };
+    if (this.serviceSession) parameters['hgsServiceEpoch'] = this.serviceSession.epoch;
     const want: Want = {
       bundleName: this.ctx.abilityInfo.bundleName,
       moduleName: this.ctx.abilityInfo.moduleName,

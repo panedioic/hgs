@@ -13,10 +13,11 @@ import hgs from 'libhgs.so';
 @Component
 export struct HgsWindowPage {
   @State toplevelId: number = 0;
+  @LocalStorageProp('hgsWaylandToplevelId') serviceToplevelId: number = 0;
 
   aboutToAppear(): void {
-    // Ability onCreate 已 hgs.setPendingToplevel(id); 页面同步取走 (出队)
-    this.toplevelId = hgs.takePendingToplevel() as number;
+    // Service windows receive their own ID even if Ability stages load out of order.
+    this.toplevelId = this.serviceToplevelId || (hgs.takePendingToplevel() as number);
   }
 
   build() {
