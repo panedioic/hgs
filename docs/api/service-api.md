@@ -1,6 +1,6 @@
-# 公共图形服务 API 1.2
+# 公共图形服务 API 1.3
 
-这一版提供统一运行时、现有 Wayland 后端和可选的 X11 后端。getApiVersion() 返回 0x10002。旧 NAPI、数值枚举和默认窗口 host 保留。启用 X11 需按 [X11 构建和接入](../integration/x11.md) 准备 ARM64 SDK 和键盘资源。
+这一版提供窗口控制、XIM 与外部帧接入。getApiVersion() 返回 0x10003。旧 NAPI、数值枚举和默认窗口宿主入口继续可用。启用 X11 需按文档准备 ARM64 SDK 和键盘资源。[X11 构建和接入](../integration/x11.md)
 
 ## ArkTS 使用方式
 
@@ -23,9 +23,28 @@ const environment = session.clientEnvironment('wayland');
 await service.stop();
 ```
 
-宿主需准备 runtimeDir 的父目录。创建目录、监听 socket 和注册逻辑输出由 start 完成，不需要先有 NativeWindow、客户端或首帧。X11 模式显式传入资源路径，服务自动分配 display 和认证文件。XIM 尚待接入。
+宿主需准备 runtimeDir 的父目录。创建目录、监听 socket 和注册逻辑输出由 start 完成，不需要先有 NativeWindow、客户端或首帧。X11 模式显式传入资源路径，服务自动分配 display 和认证文件。可为 X11 会话配置 [XIM](../integration/x11.md#xim-输入法)。
 
-默认窗口 host 仍使用 `HgsWindowHostService.init(context, options)` 订阅旧窗口管理器。它不是 HgsService 的强制依赖。使用新 start 时无需再调用默认 host 的 start；若调用新旧两个入口，必须是相同配置，否则收到冲突。宿主原生 host 与默认 ArkTS host 仍不能同时创建同一个窗口。
+### 默认窗口宿主
+
+在 EntryAbility 中调用 `HgsWindowHostService.init(this.context)`，获得 WindowStage 后调用 `HgsWindowHostService.startService(stage, options)`。options 接受 `protocols: 'wayland' | 'x11' | 'both'`，默认使用独立窗口、原生输入，返回同一套 HgsSession 和客户端环境。客户端退出后监听继续，宿主通过 `HgsWindowHostService.stopService()` 显式结束会话。
+
+- 使用 Wayland 时，宿主在 module.json5 注册继承 HAR `HgsAppWindowAbility` 的 multiton Ability，在页面列表注册调用 `HgsWindowPage` 的包装页。包装页使用 `@Entry({ useSharedStorage: true })` 接收该实例的窗口 ID。默认名字为 `HgsAppWindowAbility` 与 `pages/HgsWindowPage`，可在 init 时指定。
+- 使用 X11 时，宿主注册调用 `HgsServiceWindowPage` 的包装页，默认是 `pages/HgsServiceWindow`，可通过 `servicePageUrl` 修改。入口用 `@Entry({ useSharedStorage: true })` 接收宿主传入的窗口 ID 和 epoch。
+
+```ts
+import { HgsServiceWindowPage } from 'hgs';
+
+@Entry({ useSharedStorage: true })
+@Component
+struct X11WindowPage {
+  build() {
+    HgsServiceWindowPage()
+  }
+}
+```
+
+旧的 `HgsWindowHostService.start(...)` 仍提供 Wayland 兼容入口。自管窗口或无窗口宿主可直接使用 `HgsService.start(...)`。
 
 `composition: 'preserve'` 或缺省值保留宿主预设；`per-window`、`desktop-root` 分别显式设置独立窗口和桌面画布。output 的 width/height 缺省为 0，不覆盖宿主已经计算的尺寸；显式尺寸需同时大于 0。inputBackend 支持 auto/arkts/native。
 
@@ -50,15 +69,16 @@ onEvent 返回订阅 token，offEvent 退订。事件包含拥有自身存储的
 
 C++ 订阅在后端线程或控制线程回调，不得在回调内同步调用 start/stop；应投递到控制线程。NAPI 转为 TSFN 交给 ArkTS。已经排队的 JS 事件可能在 stop 返回后到达，宿主 UI 应依据 epoch 和所属窗口 id 丢弃迟到操作；stop 不等待任意宿主 UI 工作完成。
 
-sendInput 使用明确的公共 windowId。键和按钮的释放跟随对应按下的窗口，未知/过期目标不回退到另一个后端。pointer 的 x/y 是内容物理像素，拖动捕获期间调用方仍应提供捕获窗口坐标；rawDelta 是相对位移，scroll 的轴为 0/1。跨后端焦点仲裁和坐标变换由 P4 实施，capabilities.crossBackendFocus 当前为 false。
+sendInput 使用明确的公共 windowId。键和按钮的释放跟随对应按下的窗口，未知或过期目标会被拒绝。pointer 默认使用窗口内容坐标，X11 可启用 normalizedPosition 按实际 surface 换算。rawDelta 是相对位移，scroll 的轴为 0/1。
+
+`session.controlWindow(id, control)` 接受 focus、blur、resize 与 close。窗口宿主根据 OHOS 焦点变化更新协议焦点。切换目标时，服务先向前一个后端投递 blur，并清除其按键和按钮归属。resize 的宽高使用逻辑像素。close 请求发送给客户端，窗口销毁由后续协议事件确认。返回值表示命令已入队。
 
 ## 当前能力边界
 
 - LegacyWaylandBackend 复用原有协议、渲染器和输入；没有整体搬动旧 compositor。
-- 新 registry 桥接旧 toplevel 生命周期和状态。旧 popup 通知仍带在父窗口事件中，capabilities.popupIdentity=false；独立 popup 身份、parent/transient 完整关系与默认 host 的新 ID 接入尚未迁移。
-- surface 绑定仍通过旧兼容接口；新快照 surfaceGeneration=0 表示这层桥接尚未提供绑定代次，不代表客户端一定没有 surface。
-- 旧 FeatureConfig 只为 v1 配置一致性保留，协议注册行为没有在本阶段重写；新 ArkTS API 没有宣称可切换这些协议 global。
-- X11 端点返回 DISPLAY 和 XAUTHORITY。XIM 接入前需要从客户端环境移除 XMODIFIERS。默认 host 的 X11 surface 呈现、混合输入和 Wine 外部帧仍待集成。
+- Wayland popup 继续由原宿主按父窗口事件呈现，`capabilities.popupIdentity` 为 false。X11 popup 有独立 ID，`parentId` 按已观察到的 X11 transient 关系或同连接的菜单归属解析。
+- X11 使用 `session.bindSurface`，快照中的 surfaceGeneration 标识当前绑定，framePresented 表示当前绑定已提交首帧。Wayland 继续通过旧 surface 接口绑定。
+- Wayland 的 `wl_data_device_manager` 提供 GTK 初始化 seat 所需的最小协议实现。应用间数据传输和跨协议剪贴板桥接尚未实现。
 
 ## C++ 与测试
 
