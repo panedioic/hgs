@@ -35,6 +35,7 @@ class Seat;  // 前向声明
 class ToplevelManager;   // 前向声明 (6A 装配注入, 见 BindCompositorDeps)
 class InputResolver;     // 前向声明 (6A 装配注入)
 class MoveGrabHandler;   // 前向声明 (6A 装配注入)
+namespace hgs::service { struct WindowControl; }
 
 class InputManager {
 public:
@@ -79,6 +80,7 @@ public:
     // scrollStep: ArkTS AxisEvent.scrollStep
     // px/py: 鼠标在组件上的物理像素坐标
     void SendScrollEvent(uint32_t toplevelId, int axis, double value, int scrollStep, double px, double py);
+    void QueueWindowControl(uint32_t toplevelId, const hgs::service::WindowControl& control);
 
     // -- Wayland 线程注入 (编制层委托 InputInjector; 公开方法保留 —
     //    wl_core.cpp 首帧 focus 预设直接调用本方法) --
@@ -152,6 +154,7 @@ private:
     // Wayland 线程: Poll 去重批 → 逐事件 dispatch (注入 + move grab 语义) →
     // flush clients。由 InputQueue pipe 回调经构造注入的 flush 回调调用。
     void FlushQueue();
+    void ApplyWindowControl(uint32_t toplevelId, const hgs::service::WindowControl& control);
 
     // -- enter/leave 收敛 helper (重构第 4C2 步) --
     // 三变体 (ACT_PRESS / ACT_MOVE / SCROLL-ENTER) 中"确认要 enter 后"的共同

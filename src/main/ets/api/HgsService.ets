@@ -1,6 +1,6 @@
 import hgsNapi from 'libhgs.so';
 import { HgsServiceOptions, HgsServiceSnapshot, HgsClientEnvironment,
-  HgsServiceWindow, HgsServiceEvent, HgsServiceInput, HgsEndpoint, HgsServiceError } from 'libhgs.so';
+  HgsServiceWindow, HgsServiceEvent, HgsServiceInput, HgsEndpoint, HgsServiceError, HgsWindowControl } from 'libhgs.so';
 
 export class HgsStartError extends Error {
   readonly code: string;
@@ -32,6 +32,14 @@ export class HgsSession {
 
   bindSurface(windowId: string, surfaceId: string, attach: boolean): boolean {
     return hgsNapi.serviceBindSurface(windowId, surfaceId, attach, this.epoch);
+  }
+
+  commitText(windowId: string, text: string): boolean {
+    return hgsNapi.serviceCommitText(windowId, text, this.epoch);
+  }
+
+  controlWindow(windowId: string, control: HgsWindowControl): boolean {
+    return hgsNapi.serviceControlWindow(windowId, control, this.epoch);
   }
 
   sendInput(windowId: string, input: HgsServiceInput): boolean {

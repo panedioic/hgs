@@ -22,6 +22,7 @@ struct X11Options {
     std::string xkbRoot;
     std::string keymapPath;
     int32_t startupTimeoutMs = 5000;
+    std::string imeServerName;
 };
 struct Config {
     Protocols protocols = Protocols::Wayland;
@@ -44,14 +45,16 @@ struct Endpoint {
     bool logicalOutputReady = false;
     int32_t outputWidth = 0, outputHeight = 0;
     std::string authorityPath{};
+    std::string imeServerName{};
 };
 struct Capabilities {
     bool wayland = false;
     bool x11 = false;
+    bool xim = false;
     bool perWindow = true;
     bool desktopRoot = true;
     bool popupIdentity = false;  // v1 popup events are still attached to their parent
-    bool crossBackendFocus = false; // P4, not implied by the routing contract
+    bool crossBackendFocus = false; // both backends support the shared focus controller
 };
 struct EnvironmentVariable { std::string name, value; };
 struct InheritedFd { std::string name; int fd = -1; };
@@ -93,6 +96,8 @@ struct WindowSnapshot {
     int32_t minWidth = 0, minHeight = 0, maxWidth = 0, maxHeight = 0;
     bool visible = true, minimized = false, maximized = false, fullscreen = false, modal = false;
     uint64_t surfaceGeneration = 0;
+    bool framePresented = false;
+    bool textInputActive = false;
 };
 // All fields own their storage. Subscribers may copy events beyond the callback.
 struct Event {
@@ -103,6 +108,7 @@ struct Event {
     std::string detail;
     State state = State::Stopped;
     WindowSnapshot window;
+    WindowOrigin parentOrigin;
 };
 struct Input {
     enum class Kind { Pointer, Key, Scroll };
@@ -110,5 +116,12 @@ struct Input {
     PointerEvent pointer;
     KeyEvent key;
     ScrollEvent scroll;
+    // Pointer and scroll coordinates in the range [0, 1] across the hosted surface.
+    bool normalizedPosition = false;
+};
+struct WindowControl {
+    enum class Kind { Focus, Blur, Resize, Close };
+    Kind kind;
+    int32_t width = 0, height = 0;
 };
 } // namespace hgs::service

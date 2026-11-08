@@ -67,6 +67,7 @@ napi_value ErrorObject(napi_env env, const Error& e) {
 napi_value SnapshotObject(napi_env env, const Snapshot& s) {
     auto o = Object(env); Put(env, o, "state", StateName(s.state)); PutId(env, o, "epoch", s.epoch);
     auto caps = Object(env); Put(env, caps, "wayland", s.capabilities.wayland); Put(env, caps, "x11", s.capabilities.x11);
+    Put(env, caps, "xim", s.capabilities.xim);
     Put(env, caps, "perWindow", s.capabilities.perWindow); Put(env, caps, "desktopRoot", s.capabilities.desktopRoot);
     Put(env, caps, "popupIdentity", s.capabilities.popupIdentity); Put(env, caps, "crossBackendFocus", s.capabilities.crossBackendFocus);
     napi_set_named_property(env, o, "capabilities", caps);
@@ -86,6 +87,7 @@ napi_value WindowObject(napi_env env, const WindowSnapshot& w) {
     Put(env, o, "protocol", w.origin.protocol == Protocol::Wayland ? "wayland" : "x11"); Put(env, o, "backendId", w.origin.backendId);
     PutId(env, o, "clientId", w.origin.clientId); PutId(env, o, "nativeId", w.origin.nativeId); PutId(env, o, "objectGeneration", w.origin.objectGeneration);
     PutId(env, o, "surfaceGeneration", w.surfaceGeneration);
+    Put(env, o, "framePresented", w.framePresented);
     Put(env, o, "legacyId", static_cast<double>(w.legacyId)); Put(env, o, "clientPid", static_cast<double>(w.clientPid));
     Put(env, o, "title", w.title); Put(env, o, "appId", w.appId); Put(env, o, "role", w.role); Put(env, o, "parentId", w.parentId);
     Put(env, o, "x", static_cast<double>(w.x)); Put(env, o, "y", static_cast<double>(w.y));
@@ -93,6 +95,7 @@ napi_value WindowObject(napi_env env, const WindowSnapshot& w) {
     Put(env, o, "minWidth", static_cast<double>(w.minWidth)); Put(env, o, "minHeight", static_cast<double>(w.minHeight));
     Put(env, o, "maxWidth", static_cast<double>(w.maxWidth)); Put(env, o, "maxHeight", static_cast<double>(w.maxHeight));
     Put(env, o, "visible", w.visible); Put(env, o, "minimized", w.minimized); Put(env, o, "maximized", w.maximized);
+    Put(env, o, "textInputActive", w.textInputActive);
     Put(env, o, "fullscreen", w.fullscreen); Put(env, o, "modal", w.modal); return o;
 }
 const char* EventName(EventKind k) {
@@ -177,7 +180,8 @@ napi_value StartCommon(napi_env env, napi_callback_info info, bool asynchronous)
     if (Has(env, o, "x11")) {
         auto x11 = Property(env, o, "x11");
         if (!IsObject(env, x11) || !OptionalString(env, x11, "xkbRoot", config.x11.xkbRoot) ||
-            !OptionalString(env, x11, "keymapPath", config.x11.keymapPath)) {
+            !OptionalString(env, x11, "keymapPath", config.x11.keymapPath) ||
+            !OptionalString(env, x11, "imeServerName", config.x11.imeServerName)) {
             return Throw(env, "invalid X11 resource paths");
         }
         if (Has(env, x11, "startupTimeoutMs")) {
@@ -251,6 +255,43 @@ napi_value BindSurface(napi_env env, napi_callback_info info) {
         return Throw(env, "invalid OHOS surface ID");
     return Boolean(env, DefaultRuntime().BindSurface(window, id, attach, epoch));
 }
+napi_value CommitText(napi_env env, napi_callback_info info) {
+    size_t argc = 3;
+    napi_value args[3];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    std::string window, text, epoch;
+    if (argc != 3 || !ReadString(env, args[0], window) || window.empty() ||
+        !ReadString(env, args[1], text) || !ReadString(env, args[2], epoch) || epoch.empty())
+        return Throw(env, "window ID, UTF-8 text and session epoch required");
+    return Boolean(env, DefaultRuntime().CommitText(window, std::move(text), epoch));
+}
+napi_value ControlWindow(napi_env env, napi_callback_info info) {
+    size_t argc = 3;
+    napi_value args[3];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    std::string window, kind, epoch;
+    if (argc != 3 || !ReadString(env, args[0], window) || !IsObject(env, args[1]) ||
+        !Has(env, args[1], "kind") || !ReadString(env, Property(env, args[1], "kind"), kind) ||
+        !ReadString(env, args[2], epoch) || epoch.empty())
+        return Throw(env, "window ID, control and session epoch required");
+    WindowControl control{};
+    using Kind = WindowControl::Kind;
+    if (kind == "focus") control.kind = Kind::Focus;
+    else if (kind == "blur") control.kind = Kind::Blur;
+    else if (kind == "close") control.kind = Kind::Close;
+    else if (kind == "resize") {
+        control.kind = Kind::Resize;
+        double width, height;
+        if (!Number(env, Property(env, args[1], "width"), width) ||
+            !Number(env, Property(env, args[1], "height"), height) ||
+            width < 1 || height < 1 || width > 32767 || height > 32767 ||
+            width != std::floor(width) || height != std::floor(height))
+            return Throw(env, "invalid window size");
+        control.width = static_cast<int32_t>(width);
+        control.height = static_cast<int32_t>(height);
+    } else return Throw(env, "unknown window control");
+    return Boolean(env, DefaultRuntime().ControlWindow(window, control, epoch));
+}
 napi_value Send(napi_env env, napi_callback_info info) {
     size_t argc = 3; napi_value args[3]; napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
     std::string window, kind, epoch;
@@ -283,6 +324,9 @@ napi_value Send(napi_env env, napi_callback_info info) {
             input.scroll.scrollStep = n;
         }
     } else return Throw(env, "unknown input kind");
+    if (Has(env, o, "normalizedPosition") &&
+        !Bool(env, Property(env, o, "normalizedPosition"), input.normalizedPosition))
+        return Throw(env, "invalid normalizedPosition");
     return Boolean(env, DefaultRuntime().Send(window, input, epoch));
 }
 struct CallbackState { std::mutex mutex; napi_threadsafe_function callback = nullptr; uint64_t token = 0; } callbacks;
@@ -331,6 +375,8 @@ void RegisterServiceNapi(napi_env env, napi_value exports) {
         {"serviceClientEnvironment", nullptr, Environment, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"serviceSendInput", nullptr, Send, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"serviceBindSurface", nullptr, BindSurface, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"serviceCommitText", nullptr, CommitText, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"serviceControlWindow", nullptr, ControlWindow, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setServiceEventCallback", nullptr, SetCallback, nullptr, nullptr, nullptr, napi_default, nullptr},
     };
     napi_define_properties(env, exports, sizeof(properties) / sizeof(properties[0]), properties);

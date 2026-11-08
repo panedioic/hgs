@@ -11,6 +11,7 @@ public:
     using Dispatch = std::function<bool(const WindowSnapshot&, const Input&)>;
     InputRouter(const WindowRegistry& registry, Dispatch dispatch);
     bool Send(const WindowId& window, const Input& input);
+    void Forget(const WindowId& window);
     void Reset();
 private:
     const WindowRegistry& registry_;

@@ -88,6 +88,12 @@ bool X11Endpoint::Open(const Config& config, Error& error) {
         error = {ErrorCode::InvalidConfig, "x11-config", "X11 requires absolute resource paths and a timeout of 100–30000 ms"};
         return false;
     }
+    const auto& serverName = config.x11.imeServerName;
+    if (serverName.size() > 48 ||
+        serverName.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-") != std::string::npos) {
+        error = {ErrorCode::InvalidConfig, "xim-config", "invalid XIM server name"};
+        return false;
+    }
     std::vector<char> keymap;
     if (access((config.x11.xkbRoot + "/rules/evdev").c_str(), R_OK) != 0 ||
         !ReadKeymap(config.x11.keymapPath, keymap)) {

@@ -27,6 +27,11 @@ endif()
 # 预编译 wayland-server
 option(HGS_BUILD_X11 "Build the optional OHOS Xwayland backend" OFF)
 set(HGS_X11_DEPS_ROOT "" CACHE PATH "ARM64 OHOS wlroots and Xwayland SDK prefix")
+option(HGS_BUILD_XIM "Build the optional X11 input method server" OFF)
+set(HGS_XIM_DEPS_ROOT "" CACHE PATH "ARM64 OHOS xcb-imdkit SDK prefix")
+if(HGS_BUILD_XIM AND NOT HGS_BUILD_X11)
+    message(FATAL_ERROR "HGS_BUILD_XIM requires HGS_BUILD_X11")
+endif()
 set(WAYLAND_LIBS_DIR ${NATIVERENDER_ROOT_PATH}/../../../libs/${OHOS_ARCH})
 if(HGS_BUILD_X11)
     set(WAYLAND_LIBS_DIR "${HGS_X11_DEPS_ROOT}/lib")
@@ -155,6 +160,8 @@ if(HGS_BUILD_X11)
     target_compile_definitions(hgs_xwayland_session PRIVATE WLR_USE_UNSTABLE _GNU_SOURCE)
     target_sources(hgs PRIVATE
         backends/xwayland/xwayland_backend.cpp
+        backends/xwayland/external_frame_bridge.cpp
+        graphics/external_texture_surface.cpp
         $<TARGET_OBJECTS:hgs_xwayland_session>
         backends/xwayland/runtime/x11_endpoint.cpp
         platform/ohos/process/xwayland_process.cpp
@@ -183,4 +190,19 @@ if(HGS_BUILD_X11)
     )
     add_library(hgs_xwayland_child SHARED platform/ohos/process/xwayland_child.cpp)
     target_link_libraries(hgs_xwayland_child PRIVATE libhilog_ndk.z.so)
+    if(HGS_BUILD_XIM)
+        if(NOT EXISTS "${HGS_XIM_DEPS_ROOT}/include/xcb-imdkit/imdkit.h" OR
+           NOT EXISTS "${HGS_XIM_DEPS_ROOT}/lib/libxcb-imdkit.so.1")
+            message(FATAL_ERROR "HGS_BUILD_XIM requires staged OHOS xcb-imdkit headers and library")
+        endif()
+        target_compile_definitions(hgs PRIVATE HGS_BUILD_XIM)
+        target_compile_definitions(hgs_xwayland_session PRIVATE HGS_BUILD_XIM)
+        target_sources(hgs PRIVATE platform/ohos/process/xim_process.cpp)
+        add_library(hgs_xim_child SHARED platform/ohos/process/xim_child.cpp)
+        target_include_directories(hgs_xim_child PRIVATE "${HGS_XIM_DEPS_ROOT}/include" "${HGS_X11_INCLUDE}")
+        target_link_libraries(hgs_xim_child PRIVATE
+            "${HGS_XIM_DEPS_ROOT}/lib/libxcb-imdkit.so.1"
+            "${HGS_X11_LIB}/libxcb.so.1"
+        )
+    endif()
 endif()

@@ -4,6 +4,7 @@
 #include <functional>
 namespace hgs::service {
 class Backend;
+class ExternalFrameProvider;
 class HGS_API Runtime {
 public:
     explicit Runtime(std::vector<std::unique_ptr<Backend>> backends);
@@ -19,6 +20,9 @@ public:
     // Queues an OHOS Surface binding on backends that support it. Detach only
     // removes a binding with the same surface ID.
     bool BindSurface(const WindowId& window, uint64_t surfaceId, bool attach, const std::string& expectedEpoch);
+    bool CommitText(const WindowId& window, std::string text, const std::string& expectedEpoch);
+    bool ControlWindow(const WindowId& window, const WindowControl& control, const std::string& expectedEpoch);
+    bool SetExternalFrameProvider(ExternalFrameProvider* provider);
     uint64_t Subscribe(std::function<void(const Event&)> listener);
     void Unsubscribe(uint64_t token);
 private:

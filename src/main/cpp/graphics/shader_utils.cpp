@@ -1,5 +1,6 @@
 #include "shader_utils.h"
 
+#include <algorithm>
 #include <hilog/log.h>
 
 #undef LOG_DOMAIN
@@ -8,6 +9,15 @@
 #define LOG_TAG "WL_EGL"
 
 namespace winehua {
+
+void ComposeExternalTextureTransform(const float* nativeTransform, bool flipY, float* samplingTransform) {
+    std::copy(nativeTransform, nativeTransform + 16, samplingTransform);
+    if (!flipY) return;
+    for (int row = 0; row < 4; ++row) {
+        samplingTransform[4 + row] = -nativeTransform[4 + row];
+        samplingTransform[12 + row] = nativeTransform[4 + row] + nativeTransform[12 + row];
+    }
+}
 
 const char* kFullscreenQuadVS = R"(#version 300 es
 layout(location=0) in vec2 aPos;

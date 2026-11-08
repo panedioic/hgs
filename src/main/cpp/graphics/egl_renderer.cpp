@@ -34,19 +34,6 @@ using winehua::PerfNowUs;
 using winehua::RendererPerfWindow;
 using winehua::FrameTraceEnabled;
 
-static void ComposeZeroCopySamplingTransform(const float* nativeTransform,
-                                             bool flipY,
-                                             float* samplingTransform)
-{
-    if (!nativeTransform || !samplingTransform) return;
-    std::copy(nativeTransform, nativeTransform + 16, samplingTransform);
-    if (!flipY) return;
-    for (int row = 0; row < 4; ++row) {
-        samplingTransform[4 + row] = -nativeTransform[4 + row];
-        samplingTransform[12 + row] = nativeTransform[4 + row] + nativeTransform[12 + row];
-    }
-}
-
 EglRenderer::EglRenderer(DesktopCompositor& compositor) : compositor_(compositor) {}
 
 void EglRenderer::OnVSync(long long timestamp, void* data)
@@ -326,7 +313,7 @@ bool EglRenderer::UpdateZeroCopyFrame(int& width, int& height)
     }
 
     zeroCopyConsecutiveFailures_ = 0;
-    ComposeZeroCopySamplingTransform(zeroCopyTransform_, zeroCopyVulkanSource_,
+    winehua::ComposeExternalTextureTransform(zeroCopyTransform_, zeroCopyVulkanSource_,
                                       zeroCopySamplingTransform_);
     const int64_t imageTimestamp = OH_NativeImage_GetTimestamp(zeroCopyImage_);
     const int64_t previousTimestamp = zeroCopyLastTimestamp_;

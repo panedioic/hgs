@@ -1,6 +1,9 @@
 #include "session.h"
 #include "platform/ohos/presentation/cpu_surface.h"
 #include "platform/ohos/process/xwayland_process.h"
+#ifdef HGS_BUILD_XIM
+#include "platform/ohos/process/xim_process.h"
+#endif
 
 #include <libdrm/drm_fourcc.h>
 #include <hilog/log.h>
@@ -53,8 +56,22 @@ struct hgs_x11_session {
     struct wl_list windows;
     uint64_t next_client, next_generation;
     uint32_t resource_mask;
+    xcb_atom_t wm_state, wm_state_modal;
     hgs_x11_observer observer;
+    enum hgs_x11_external_result (*present_external)(void *, uint32_t, uint32_t, uint64_t,
+                                                     struct NativeWindow *);
+    void (*close_external)(void *, uint64_t, bool);
+    void *external_context;
+    struct wl_event_source *external_timer;
+    int external_period_ms;
     void *context;
+#ifdef HGS_BUILD_XIM
+    const char *ime_server_name, *authority_path;
+    struct wl_event_source *xim_source;
+    int xim_fd;
+    uint32_t xim_xid;
+    bool xim_failed;
+#endif
 };
 
 struct xwindow {
@@ -62,14 +79,21 @@ struct xwindow {
     struct wlr_xwayland_surface *xsurface;
     struct wl_list link;
     uint64_t client_id, generation;
+    uint64_t surface_generation;
+    uint64_t popup_parent_generation;
     bool mapped;
+    bool text_input_active;
     struct hgs_cpu_surface output;
     unsigned present_attempts;
     bool presented;
     struct wl_listener destroy, associate, dissociate;
     struct wl_listener map, unmap, commit;
-    struct wl_listener title, app_class, geometry, configure, close;
+    struct wl_listener title, app_class, geometry, parent, hints, configure, close;
+    struct wl_listener map_request;
+    struct wl_event_source *modal_update;
 };
+
+static void release_window_input(struct xwindow *window);
 
 static void listen_to(struct wl_signal *signal, struct wl_listener *listener,
                       wl_notify_func_t callback) {
@@ -83,22 +107,58 @@ static void detach(struct wl_listener *listener) {
     listener->link.next = listener->link.prev = NULL;
 }
 
+static const struct xwindow *parent_window(const struct xwindow *window) {
+    const struct wlr_xwayland_surface *parent = window->xsurface->parent;
+    struct xwindow *other;
+    wl_list_for_each(other, &window->session->windows, link) {
+        if (other == window || !other->mapped) continue;
+        if (parent ? other->xsurface == parent : other->generation == window->popup_parent_generation)
+            return other;
+    }
+    return NULL;
+}
+
 static void publish(struct xwindow *window, enum hgs_x11_event_kind kind) {
     struct wlr_xwayland_surface *xs = window->xsurface;
     struct hgs_x11_session *session = window->session;
+    const struct xwindow *parent = parent_window(window);
     struct hgs_x11_window info = {
         .xid = xs->window_id,
         .client_id = window->client_id,
         .pid = xs->pid > 0 ? (uint32_t)xs->pid : 0,
         .generation = window->generation,
+        .surface_generation = window->output.id ? window->surface_generation : 0,
+        .parent_xid = parent ? parent->xsurface->window_id : 0,
+        .parent_client_id = parent ? parent->client_id : 0,
+        .parent_generation = parent ? parent->generation : 0,
         .title = xs->title,
         .app_id = xs->class,
         .x = xs->x, .y = xs->y, .width = xs->width, .height = xs->height,
         .popup = xs->override_redirect, .modal = xs->modal,
         .minimized = xs->minimized, .maximized = xs->maximized_vert && xs->maximized_horz,
         .fullscreen = xs->fullscreen,
+        .text_input_active = window->text_input_active,
+        .frame_presented = window->presented,
     };
+    const xcb_size_hints_t *hints = xs->size_hints;
+    if (hints && (hints->flags & XCB_ICCCM_SIZE_HINT_P_MIN_SIZE)) {
+        info.min_width = hints->min_width;
+        info.min_height = hints->min_height;
+    }
+    if (hints && (hints->flags & XCB_ICCCM_SIZE_HINT_P_MAX_SIZE)) {
+        info.max_width = hints->max_width;
+        info.max_height = hints->max_height;
+    }
     session->observer(session->context, kind, &info);
+}
+
+static void publish_children(struct xwindow *parent) {
+    struct xwindow *other;
+    wl_list_for_each(other, &parent->session->windows, link) {
+        if (other->mapped && other != parent &&
+            (other->xsurface->parent == parent->xsurface || other->popup_parent_generation == parent->generation))
+            publish(other, HGS_X11_UPDATED);
+    }
 }
 
 static uint64_t window_client_id(const struct xwindow *window) {
@@ -121,17 +181,41 @@ static void map_window(struct wl_listener *listener, void *data) {
     // X server 会复用资源 ID 槽。只在该槽仍有可观察 X 窗口时复用代次。
     if (!window->client_id) window->client_id = window_client_id(window);
     window->generation = ++window->session->next_generation;
+    window->popup_parent_generation = 0;
+    if (window->xsurface->override_redirect && !window->xsurface->parent) {
+        // Override-redirect menus often omit WM_TRANSIENT_FOR. Only adopt
+        // them into a focused, mapped window on the same X connection.
+        struct xwindow *other;
+        wl_list_for_each(other, &window->session->windows, link) {
+            if (other != window && other->mapped && other->client_id == window->client_id &&
+                other->xsurface->surface == window->session->seat->keyboard_state.focused_surface) {
+                window->popup_parent_generation = other->generation;
+                break;
+            }
+        }
+    }
     wlr_surface_send_enter(window->xsurface->surface, window->session->output);
     publish(window, HGS_X11_MAPPED);
+    publish_children(window);
     wlr_output_schedule_frame(window->session->output);
+}
+
+static void close_window_output(struct xwindow *window, bool unmapped) {
+    if (window->session->close_external)
+        window->session->close_external(window->session->external_context, window->generation, unmapped);
+    hgs_cpu_surface_close(&window->output);
+    window->present_attempts = 0;
+    window->presented = false;
 }
 
 static void withdraw_window(struct xwindow *window) {
     if (!window->mapped) return;
+    release_window_input(window);
+    window->text_input_active = false;
     window->mapped = false;
-    hgs_cpu_surface_close(&window->output);
-    window->present_attempts = 0;
+    close_window_output(window, true);
     publish(window, HGS_X11_UNMAPPED);
+    publish_children(window);
 }
 
 static void unmap_window(struct wl_listener *listener, void *data) {
@@ -181,8 +265,12 @@ static void free_window(struct xwindow *window) {
     detach(&window->title);
     detach(&window->app_class);
     detach(&window->geometry);
+    detach(&window->parent);
+    detach(&window->hints);
     detach(&window->configure);
     detach(&window->close);
+    detach(&window->map_request);
+    if (window->modal_update) wl_event_source_remove(window->modal_update);
     wl_list_remove(&window->link);
     free(window);
 }
@@ -218,10 +306,71 @@ static void configure_window(struct wl_listener *listener, void *data) {
                                   request->width, request->height);
 }
 
+static void parent_changed(struct wl_listener *listener, void *data) {
+    (void)data;
+    struct xwindow *window = wl_container_of(listener, window, parent);
+    if (window->mapped) publish(window, HGS_X11_UPDATED);
+}
+
+static void hints_changed(struct wl_listener *listener, void *data) {
+    (void)data;
+    struct xwindow *window = wl_container_of(listener, window, hints);
+    if (window->mapped) publish(window, HGS_X11_UPDATED);
+}
+
 static void request_close(struct wl_listener *listener, void *data) {
     (void)data;
     struct xwindow *window = wl_container_of(listener, window, close);
     if (window->mapped) publish(window, HGS_X11_CLOSE_REQUESTED);
+}
+
+static void request_map(struct wl_listener *listener, void *data) {
+    (void)data;
+    struct xwindow *window = wl_container_of(listener, window, map_request);
+    struct hgs_x11_session *session = window->session;
+    if (!session->wm_state || !session->wm_state_modal) return;
+    xcb_connection_t *connection = wlr_xwayland_get_xwm_connection(session->xwayland);
+    // XWM writes _NET_WM_STATE at MapNotify, which can precede its initial
+    // property read during Wayland surface association. Preserve client modality first.
+    const xcb_get_property_cookie_t cookie = xcb_get_property(connection, false,
+        window->xsurface->window_id, session->wm_state, XCB_ATOM_ATOM, 0, 64);
+    xcb_get_property_reply_t *reply = xcb_get_property_reply(connection, cookie, NULL);
+    if (!reply) return;
+    window->xsurface->modal = false;
+    if (reply->type == XCB_ATOM_ATOM && reply->format == 32) {
+        const xcb_atom_t *states = xcb_get_property_value(reply);
+        for (uint32_t i = 0; i < reply->value_len; ++i) {
+            if (states[i] == session->wm_state_modal) {
+                window->xsurface->modal = true;
+                break;
+            }
+        }
+    }
+    free(reply);
+}
+
+static void publish_modal_update(void *data) {
+    struct xwindow *window = data;
+    window->modal_update = NULL;
+    if (window->mapped) publish(window, HGS_X11_UPDATED);
+}
+
+static bool observe_x11_event(struct wlr_xwayland *xwayland, xcb_generic_event_t *event) {
+    struct hgs_x11_session *session = xwayland->data;
+    if ((event->response_type & 0x7f) != XCB_CLIENT_MESSAGE || !session->wm_state_modal) return false;
+    const xcb_client_message_event_t *message = (const xcb_client_message_event_t *)event;
+    if (message->type != session->wm_state || message->format != 32 ||
+        (message->data.data32[1] != session->wm_state_modal && message->data.data32[2] != session->wm_state_modal))
+        return false;
+    struct xwindow *window;
+    wl_list_for_each(window, &session->windows, link) {
+        if (window->mapped && window->xsurface->window_id == message->window && !window->modal_update) {
+            // Read the result after wlroots handles the request.
+            window->modal_update = wl_event_loop_add_idle(session->loop, publish_modal_update, window);
+            break;
+        }
+    }
+    return false;
 }
 
 static void new_window(struct wl_listener *listener, void *data) {
@@ -238,8 +387,11 @@ static void new_window(struct wl_listener *listener, void *data) {
     listen_to(&surface->events.set_title, &window->title, title_changed);
     listen_to(&surface->events.set_class, &window->app_class, class_changed);
     listen_to(&surface->events.set_geometry, &window->geometry, geometry_changed);
+    listen_to(&surface->events.set_parent, &window->parent, parent_changed);
+    listen_to(&surface->events.set_size_hints, &window->hints, hints_changed);
     listen_to(&surface->events.request_configure, &window->configure, configure_window);
     listen_to(&surface->events.request_close, &window->close, request_close);
+    listen_to(&surface->events.map_request, &window->map_request, request_map);
 }
 
 static pixman_format_code_t pixman_format(uint32_t fourcc) {
@@ -273,6 +425,12 @@ static bool present_window(struct xwindow *window) {
     return shown;
 }
 
+static void mark_presented(struct xwindow *window) {
+    if (window->presented) return;
+    window->presented = true;
+    publish(window, HGS_X11_UPDATED);
+}
+
 static void output_frame(struct wl_listener *listener, void *data) {
     (void)data;
     struct hgs_x11_session *session = wl_container_of(listener, session, frame);
@@ -282,13 +440,29 @@ static void output_frame(struct wl_listener *listener, void *data) {
     wl_list_for_each(window, &session->windows, link) {
         if (!window->mapped) continue;
         wlr_surface_send_frame_done(window->xsurface->surface, &now);
+        if (session->present_external && window->output.window) {
+            const pid_t pid = window->xsurface->pid;
+            const enum hgs_x11_external_result result =
+                session->present_external(session->external_context, window->xsurface->window_id,
+                                          pid > 0 ? (uint32_t)pid : 0, window->generation,
+                                          window->output.window);
+            if (result == HGS_X11_EXTERNAL_OWNED) continue;
+            if (result == HGS_X11_EXTERNAL_PRESENTED) {
+                mark_presented(window);
+                continue;
+            }
+            if (result == HGS_X11_EXTERNAL_RELEASED) {
+                hgs_cpu_surface_reset(&window->output);
+                window->present_attempts = 8;
+            }
+        }
         if (!window->present_attempts) continue;
         if (present_window(window)) {
             window->present_attempts = 0;
             if (!window->presented) {
                 OH_LOG_Print(LOG_APP, LOG_INFO, 0, "HGS_X11", "Presented first frame xid=%{public}u surface=%{public}llu",
                              window->xsurface->window_id, (unsigned long long)window->output.id);
-                window->presented = true;
+                mark_presented(window);
             }
         } else if (--window->present_attempts) {
             wlr_output_schedule_frame(session->output);
@@ -299,12 +473,95 @@ static void output_frame(struct wl_listener *listener, void *data) {
     }
 }
 
+static int external_tick(void *context) {
+    struct hgs_x11_session *session = context;
+    struct xwindow *window;
+    wl_list_for_each(window, &session->windows, link) {
+        if (!window->mapped || !window->output.window) continue;
+        wlr_output_schedule_frame(session->output);
+        wl_event_source_timer_update(session->external_timer, session->external_period_ms);
+        break;
+    }
+    return 0;
+}
+
+#ifdef HGS_BUILD_XIM
+static void sync_xim_focus(struct hgs_x11_session *session) {
+    struct xwindow *window;
+    wl_list_for_each(window, &session->windows, link) {
+        if (!window->mapped) continue;
+        const bool active = window->xsurface->window_id == session->xim_xid &&
+            session->seat->keyboard_state.focused_surface == window->xsurface->surface;
+        if (window->text_input_active != active) {
+            window->text_input_active = active;
+            publish(window, HGS_X11_UPDATED);
+        }
+    }
+}
+
+static void close_xim(struct hgs_x11_session *session) {
+    if (session->xim_source) wl_event_source_remove(session->xim_source);
+    session->xim_source = NULL;
+    if (session->xim_fd >= 0) close(session->xim_fd);
+    session->xim_fd = -1;
+}
+
+static int read_xim(int fd, uint32_t mask, void *data) {
+    (void)mask;
+    struct hgs_x11_session *session = data;
+    struct hgs_xim_notice notice;
+    ssize_t count;
+    do { count = recv(fd, &notice, sizeof(notice), MSG_DONTWAIT | MSG_TRUNC); } while (count < 0 && errno == EINTR);
+    if (count < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return 0;
+    if (count == sizeof(notice)) {
+        if (notice.type == HGS_XIM_READY && !session->ready) {
+            session->ready = true;
+            return 0;
+        }
+        if (notice.type == HGS_XIM_FOCUS && session->ready) {
+            session->xim_xid = notice.xid;
+            sync_xim_focus(session);
+            return 0;
+        }
+    }
+    close_xim(session);
+    if (!session->ready) session->xim_failed = true;
+    session->xim_xid = 0;
+    sync_xim_focus(session);
+    return 0;
+}
+#endif
+
+static xcb_atom_t lookup_atom(xcb_connection_t *connection, const char *name) {
+    xcb_intern_atom_reply_t *reply = xcb_intern_atom_reply(connection,
+        xcb_intern_atom(connection, true, strlen(name), name), NULL);
+    const xcb_atom_t atom = reply ? reply->atom : XCB_ATOM_NONE;
+    free(reply);
+    return atom;
+}
+
 static void xwayland_ready(struct wl_listener *listener, void *data) {
     (void)data;
     struct hgs_x11_session *session = wl_container_of(listener, session, xwayland_ready);
     xcb_connection_t *connection = wlr_xwayland_get_xwm_connection(session->xwayland);
     if (!connection || xcb_connection_has_error(connection)) return;
     session->resource_mask = xcb_get_setup(connection)->resource_id_mask;
+    session->wm_state = lookup_atom(connection, "_NET_WM_STATE");
+    session->wm_state_modal = lookup_atom(connection, "_NET_WM_STATE_MODAL");
+#ifdef HGS_BUILD_XIM
+    if (session->ime_server_name && session->ime_server_name[0]) {
+        session->xim_fd = hgs_spawn_xim(session->server.display_name, session->authority_path,
+                                       session->ime_server_name);
+        if (session->xim_fd >= 0) {
+            session->xim_source = wl_event_loop_add_fd(session->loop, session->xim_fd,
+                                                       WL_EVENT_READABLE, read_xim, session);
+            if (session->xim_source) return;
+        }
+        close_xim(session);
+        session->xim_failed = true;
+        return;
+    }
+#endif
     session->ready = true;
 }
 
@@ -449,7 +706,15 @@ struct hgs_x11_session *hgs_x11_create(const struct hgs_x11_settings *settings, 
     struct hgs_x11_session *session = calloc(1, sizeof(*session));
     if (!session) return NULL;
     session->ready_fd = session->child.control_fd = session->server.wm_fd[0] = -1;
+#ifdef HGS_BUILD_XIM
+    session->xim_fd = -1;
+    session->ime_server_name = settings->ime_server_name;
+    session->authority_path = settings->authority_path;
+#endif
     session->observer = settings->observer;
+    session->present_external = settings->present_external;
+    session->close_external = settings->close_external;
+    session->external_context = settings->external_context;
     session->context = settings->context;
     wl_list_init(&session->windows);
     session->display = wl_display_create();
@@ -458,6 +723,11 @@ struct hgs_x11_session *hgs_x11_create(const struct hgs_x11_settings *settings, 
     session->wake_source = wl_event_loop_add_fd(session->loop, settings->wake_fd,
                                                 WL_EVENT_READABLE, read_wake, session);
     if (!session->wake_source) goto failed;
+    if (session->present_external) {
+        session->external_period_ms = (1000000 + settings->refresh_millihz / 2) / settings->refresh_millihz;
+        session->external_timer = wl_event_loop_add_timer(session->loop, external_tick, session);
+        if (!session->external_timer) goto failed;
+    }
     session->backend = wlr_headless_backend_create(session->loop);
     session->renderer = wlr_pixman_renderer_create();
     if (!session->backend || !session->renderer ||
@@ -495,6 +765,8 @@ struct hgs_x11_session *hgs_x11_create(const struct hgs_x11_settings *settings, 
     wl_signal_init(&session->server.events.destroy);
     session->xwayland = wlr_xwayland_create_with_server(session->display, compositor, &session->server);
     if (!session->xwayland) goto failed;
+    session->xwayland->data = session;
+    session->xwayland->user_event_handler = observe_x11_event;
     wlr_xwayland_set_seat(session->xwayland, session->seat);
     listen_to(&session->xwayland->events.ready, &session->xwayland_ready, xwayland_ready);
     listen_to(&session->xwayland->events.new_surface, &session->new_surface, new_window);
@@ -516,11 +788,23 @@ int hgs_x11_dispatch(struct hgs_x11_session *session, int timeout_ms) {
 bool hgs_x11_ready(const struct hgs_x11_session *session) { return session->ready; }
 const char *hgs_x11_diagnostic(const struct hgs_x11_session *session) { return session->diagnostic; }
 bool hgs_x11_child_lost(const struct hgs_x11_session *session) { return session->child_lost; }
+bool hgs_x11_xim_failed(const struct hgs_x11_session *session) {
+#ifdef HGS_BUILD_XIM
+    return session->xim_failed;
+#else
+    (void)session;
+    return false;
+#endif
+}
 
 void hgs_x11_destroy(struct hgs_x11_session *session) {
     if (!session) return;
+#ifdef HGS_BUILD_XIM
+    close_xim(session);
+#endif
     close_ready_channel(session);
     if (session->wake_source) wl_event_source_remove(session->wake_source);
+    if (session->external_timer) wl_event_source_remove(session->external_timer);
     if (session->child_source) wl_event_source_remove(session->child_source);
     detach(&session->xwayland_ready);
     detach(&session->new_surface);
@@ -549,25 +833,49 @@ static struct xwindow *find_window(struct hgs_x11_session *session, uint32_t xid
     return NULL;
 }
 
+void hgs_x11_commit_text(struct hgs_x11_session *session, uint32_t xid, uint64_t generation,
+                         const char *text, size_t length) {
+#ifdef HGS_BUILD_XIM
+    const struct xwindow *window = find_window(session, xid, generation);
+    if (session->xim_fd < 0 || !window || !window->text_input_active || !length ||
+        length > HGS_XIM_TEXT_LIMIT) return;
+    struct hgs_xim_commit message = {.xid = xid};
+    memcpy(message.text, text, length);
+    ssize_t count;
+    do {
+        count = send(session->xim_fd, &message, offsetof(struct hgs_xim_commit, text) + length,
+                     MSG_DONTWAIT | MSG_NOSIGNAL);
+    } while (count < 0 && errno == EINTR);
+#else
+    (void)session; (void)xid; (void)generation; (void)text; (void)length;
+#endif
+}
+
 void hgs_x11_bind_surface(struct hgs_x11_session *session, uint32_t xid, uint64_t generation,
                           uint64_t surface_id, bool attach) {
     struct xwindow *window = find_window(session, xid, generation);
     if (!window) return;
     if (!attach) {
         if (window->output.id != surface_id) return;
-        hgs_cpu_surface_close(&window->output);
-        window->present_attempts = 0;
+        close_window_output(window, false);
+        publish(window, HGS_X11_UPDATED);
         return;
     }
     if (window->output.id != surface_id) {
-        if (!hgs_cpu_surface_open(&window->output, surface_id)) {
+        struct hgs_cpu_surface replacement = {0};
+        if (!hgs_cpu_surface_open(&replacement, surface_id)) {
             OH_LOG_Print(LOG_APP, LOG_WARN, 0, "HGS_X11", "Could not bind surface=%{public}llu",
                          (unsigned long long)surface_id);
             return;
         }
-        window->presented = false;
+        close_window_output(window, false);
+        window->output = replacement;
+        ++window->surface_generation;
+        publish(window, HGS_X11_UPDATED);
     }
     window->present_attempts = 8;
+    if (session->external_timer)
+        wl_event_source_timer_update(session->external_timer, session->external_period_ms);
     wlr_output_schedule_frame(session->output);
 }
 
@@ -587,13 +895,12 @@ static void focus_keyboard(struct hgs_x11_session *session, struct wlr_xwayland_
     wlr_xwayland_surface_activate(window, true);
     wlr_seat_keyboard_notify_enter(session->seat, window->surface, session->keyboard.keycodes,
                                     session->keyboard.num_keycodes, &session->keyboard.modifiers);
+#ifdef HGS_BUILD_XIM
+    sync_xim_focus(session);
+#endif
 }
 
-void hgs_x11_key(struct hgs_x11_session *session, uint32_t xid, uint64_t generation,
-                 uint32_t code, bool pressed) {
-    struct wlr_xwayland_surface *window = target(session, xid, generation);
-    if (!window) return;
-    focus_keyboard(session, window);
+static void notify_key(struct hgs_x11_session *session, uint32_t code, bool pressed) {
     struct wlr_keyboard_key_event event = {
         .time_msec = now_ms(), .keycode = code, .update_state = true,
         .state = pressed ? WL_KEYBOARD_KEY_STATE_PRESSED : WL_KEYBOARD_KEY_STATE_RELEASED,
@@ -603,14 +910,80 @@ void hgs_x11_key(struct hgs_x11_session *session, uint32_t xid, uint64_t generat
     wlr_seat_keyboard_notify_modifiers(session->seat, &session->keyboard.modifiers);
 }
 
-void hgs_x11_pointer(struct hgs_x11_session *session, uint32_t xid, uint64_t generation,
-                     double x, double y, uint32_t button, int action) {
+static void release_window_input(struct xwindow *window) {
+    struct hgs_x11_session *session = window->session;
+    struct wlr_surface *surface = window->xsurface->surface;
+    if (!surface) return;
+    if (session->seat->keyboard_state.focused_surface == surface) {
+        uint32_t keys[WLR_KEYBOARD_KEYS_CAP];
+        const size_t count = session->keyboard.num_keycodes;
+        memcpy(keys, session->keyboard.keycodes, count * sizeof(keys[0]));
+        for (size_t i = 0; i < count; ++i) notify_key(session, keys[i], false);
+        wlr_seat_keyboard_notify_clear_focus(session->seat);
+    }
+    struct wlr_seat_pointer_state *pointer = &session->seat->pointer_state;
+    if (pointer->focused_surface == surface) {
+        const uint32_t now = now_ms();
+        while (pointer->button_count > 0) {
+            wlr_seat_pointer_notify_button(session->seat, now, pointer->buttons[0].button,
+                                           WL_POINTER_BUTTON_STATE_RELEASED);
+        }
+        wlr_seat_pointer_notify_frame(session->seat);
+        wlr_seat_pointer_notify_clear_focus(session->seat);
+    }
+}
+
+void hgs_x11_key(struct hgs_x11_session *session, uint32_t xid, uint64_t generation,
+                 uint32_t code, bool pressed) {
     struct wlr_xwayland_surface *window = target(session, xid, generation);
     if (!window) return;
+    focus_keyboard(session, window);
+    notify_key(session, code, pressed);
+}
+
+void hgs_x11_control_window(struct hgs_x11_session *session, uint32_t xid, uint64_t generation,
+                            enum hgs_x11_control action, int32_t width, int32_t height) {
+    struct xwindow *window = find_window(session, xid, generation);
+    if (!window) return;
+    struct wlr_xwayland_surface *surface = window->xsurface;
+    switch (action) {
+        case HGS_X11_FOCUS:
+            focus_keyboard(session, surface);
+            break;
+        case HGS_X11_BLUR:
+            if (session->seat->keyboard_state.focused_surface == surface->surface)
+                wlr_xwayland_surface_activate(surface, false);
+            release_window_input(window);
+#ifdef HGS_BUILD_XIM
+            sync_xim_focus(session);
+#endif
+            break;
+        case HGS_X11_RESIZE:
+            wlr_xwayland_surface_configure(surface, surface->x, surface->y, width, height);
+            break;
+        case HGS_X11_CLOSE:
+            wlr_xwayland_surface_close(surface);
+            break;
+    }
+}
+
+static bool map_position(struct wlr_surface *surface, double *x, double *y) {
+    const int width = surface->current.width, height = surface->current.height;
+    if (width <= 0 || height <= 0) return false;
+    *x = fmin(*x * width, width - 1);
+    *y = fmin(*y * height, height - 1);
+    return true;
+}
+
+void hgs_x11_pointer(struct hgs_x11_session *session, uint32_t xid, uint64_t generation,
+                     double x, double y, uint32_t button, int action, bool normalized) {
+    struct wlr_xwayland_surface *window = target(session, xid, generation);
+    if (!window) return;
+    if (normalized && !map_position(window->surface, &x, &y)) return;
     uint32_t now = now_ms();
     wlr_seat_pointer_notify_enter(session->seat, window->surface, x, y);
     wlr_seat_pointer_notify_motion(session->seat, now, x, y);
-    if (action == 1) focus_keyboard(session, window);
+    if (action == 1 && !window->override_redirect) focus_keyboard(session, window);
     if (action != 3 && button) {
         wlr_seat_pointer_notify_button(session->seat, now, button,
             action == 1 ? WL_POINTER_BUTTON_STATE_PRESSED : WL_POINTER_BUTTON_STATE_RELEASED);
@@ -619,9 +992,10 @@ void hgs_x11_pointer(struct hgs_x11_session *session, uint32_t xid, uint64_t gen
 }
 
 void hgs_x11_scroll(struct hgs_x11_session *session, uint32_t xid, uint64_t generation,
-                    double x, double y, int axis, double value) {
+                    double x, double y, int axis, double value, bool normalized) {
     struct wlr_xwayland_surface *window = target(session, xid, generation);
     if (!window || value == 0) return;
+    if (normalized && !map_position(window->surface, &x, &y)) return;
     wlr_seat_pointer_notify_enter(session->seat, window->surface, x, y);
     wlr_seat_pointer_notify_axis(session->seat, now_ms(),
         axis == 0 ? WL_POINTER_AXIS_VERTICAL_SCROLL : WL_POINTER_AXIS_HORIZONTAL_SCROLL,

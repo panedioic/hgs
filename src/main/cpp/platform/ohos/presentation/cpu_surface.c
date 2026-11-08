@@ -5,22 +5,27 @@
 #include <poll.h>
 #include <unistd.h>
 
-bool hgs_cpu_surface_open(struct hgs_cpu_surface *surface, uint64_t id) {
-    OHNativeWindow *window = NULL;
-    if (OH_NativeWindow_CreateNativeWindowFromSurfaceId(id, &window) != 0 || !window) return false;
-
+bool hgs_cpu_surface_reset(struct hgs_cpu_surface *surface) {
+    OHNativeWindow *window = surface->window;
     uint64_t usage = 0;
-    if (OH_NativeWindow_NativeWindowHandleOpt(window, GET_USAGE, &usage) != 0 ||
-        OH_NativeWindow_NativeWindowHandleOpt(window, SET_USAGE, usage | NATIVEBUFFER_USAGE_CPU_WRITE) != 0 ||
-        OH_NativeWindow_NativeWindowHandleOpt(window, SET_FORMAT, NATIVEBUFFER_PIXEL_FMT_RGBA_8888) != 0 ||
-        OH_NativeWindow_NativeWindowHandleOpt(window, SET_TIMEOUT, 0) != 0 ||
-        OH_NativeWindow_NativeWindowSetScalingModeV2(window, OH_SCALING_MODE_SCALE_TO_WINDOW_V2) != 0) {
-        OH_NativeWindow_DestroyNativeWindow(window);
+    return window &&
+        OH_NativeWindow_NativeWindowHandleOpt(window, GET_USAGE, &usage) == 0 &&
+        OH_NativeWindow_NativeWindowHandleOpt(window, SET_USAGE, usage | NATIVEBUFFER_USAGE_CPU_WRITE) == 0 &&
+        OH_NativeWindow_NativeWindowHandleOpt(window, SET_FORMAT, NATIVEBUFFER_PIXEL_FMT_RGBA_8888) == 0 &&
+        OH_NativeWindow_NativeWindowHandleOpt(window, SET_TIMEOUT, 0) == 0 &&
+        OH_NativeWindow_NativeWindowSetScalingModeV2(window, OH_SCALING_MODE_SCALE_TO_WINDOW_V2) == 0;
+}
+
+bool hgs_cpu_surface_open(struct hgs_cpu_surface *surface, uint64_t id) {
+    struct hgs_cpu_surface output = {.id = id};
+    if (OH_NativeWindow_CreateNativeWindowFromSurfaceId(id, &output.window) != 0 || !output.window)
+        return false;
+    if (!hgs_cpu_surface_reset(&output)) {
+        hgs_cpu_surface_close(&output);
         return false;
     }
     hgs_cpu_surface_close(surface);
-    surface->window = window;
-    surface->id = id;
+    *surface = output;
     return true;
 }
 

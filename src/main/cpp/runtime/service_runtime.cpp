@@ -22,7 +22,7 @@ bool SameConfig(const Config& a, const Config& b) {
         return std::make_tuple(c.protocols, c.runtimeDir, c.waylandSocket,
             w.output.width, w.output.height, w.output.refreshMilliHz, w.output.scale,
             w.composition, w.inputBackend, w.setProcessEnvironment,
-            c.x11.xkbRoot, c.x11.keymapPath, c.x11.startupTimeoutMs);
+            c.x11.xkbRoot, c.x11.keymapPath, c.x11.startupTimeoutMs, c.x11.imeServerName);
     };
     return values(a) == values(b) && features(a.legacyWaylandFeatures) == features(b.legacyWaylandFeatures);
 }
@@ -54,19 +54,29 @@ struct Runtime::Impl {
     Config config;
     std::vector<std::unique_ptr<Backend>> backends;
     std::vector<Backend*> active;
+    WindowId focused;
     WindowRegistry registry;
     EventBus events;
     uint64_t nextSerial = 0;
     InputRouter input;
     explicit Impl(std::vector<std::unique_ptr<Backend>> b)
         : backends(std::move(b)), input(registry, [this](const WindowSnapshot& w, const Input& i) {
-            for (auto* backend : active) if (backend->Id() == w.origin.backendId && backend->GetProtocol() == w.origin.protocol) return backend->Send(w, i);
-            return false;
+            auto* backend = FindBackend(w);
+            return backend && backend->Send(w, i);
         }) {
         for (const auto& backend : backends) {
             if (backend->GetProtocol() == Protocol::Wayland) snapshot.capabilities.wayland = true;
             else snapshot.capabilities.x11 = true;
+            if (backend->SupportsXim()) snapshot.capabilities.xim = true;
         }
+        snapshot.capabilities.crossBackendFocus = snapshot.capabilities.wayland && snapshot.capabilities.x11;
+    }
+    Backend* FindBackend(const WindowSnapshot& window) const {
+        for (auto* backend : active) {
+            if (backend->Id() == window.origin.backendId && backend->GetProtocol() == window.origin.protocol)
+                return backend;
+        }
+        return nullptr;
     }
     Event Stamp(Event e) {
         std::lock_guard<std::mutex> lock(mutex);
@@ -98,11 +108,21 @@ struct Runtime::Impl {
                 auto& origin = event.window.origin;
                 // A backend cannot publish another backend's identity.
                 if (origin.epoch != epoch || origin.backendId != backendId || origin.protocol != protocol) return;
+                const auto& parent = event.parentOrigin;
+                if (parent.epoch == epoch && parent.backendId == backendId && parent.protocol == protocol) {
+                    if (auto resolved = registry.Find(parent)) event.window.parentId = resolved->id;
+                }
                 std::optional<WindowSnapshot> window;
                 switch (event.kind) {
                     case EventKind::Created: window = registry.Create(event.window); break;
                     case EventKind::Changed: window = registry.Update(event.window); break;
-                    case EventKind::Destroyed: window = registry.Remove(origin); break;
+                    case EventKind::Destroyed:
+                        window = registry.Remove(origin);
+                        if (window) {
+                            input.Forget(window->id);
+                            if (focused == window->id) focused.clear();
+                        }
+                        break;
                     case EventKind::CloseRequested: window = registry.Find(origin); break;
                     default: return;
                 }
@@ -216,6 +236,7 @@ void Runtime::Stop() {
         std::lock_guard<std::mutex> lock(p.mutex);
         if (p.snapshot.state == State::Stopped) return;
         p.snapshot.state = State::Stopping;
+        p.focused.clear();
     }
     p.StateEvent();
     for (auto it = p.active.rbegin(); it != p.active.rend(); ++it) (*it)->Stop();
@@ -236,9 +257,11 @@ ClientEnvironment Runtime::Environment(Protocol protocol, Error& error, const st
     if (impl_->snapshot.state == State::Ready) for (const auto& ep : impl_->snapshot.endpoints) {
         if (ep.protocol != protocol) continue;
         if (protocol == Protocol::Wayland) return {{{"XDG_RUNTIME_DIR", ep.runtimeDir}, {"WAYLAND_DISPLAY", ep.address}}, {"DISPLAY", "WAYLAND_SOCKET"}, {}};
-        ClientEnvironment environment{{{"DISPLAY", ep.address}}, {"WAYLAND_DISPLAY", "WAYLAND_SOCKET", "XMODIFIERS"}, {}};
+        ClientEnvironment environment{{{"DISPLAY", ep.address}}, {"WAYLAND_DISPLAY", "WAYLAND_SOCKET"}, {}};
         if (ep.authorityPath.empty()) environment.unset.push_back("XAUTHORITY");
         else environment.set.push_back({"XAUTHORITY", ep.authorityPath});
+        if (ep.imeServerName.empty()) environment.unset.push_back("XMODIFIERS");
+        else environment.set.push_back({"XMODIFIERS", "@im=" + ep.imeServerName});
         return environment;
     }
     error = {ErrorCode::NotReady, "environment", "requested protocol has no ready endpoint"};
@@ -251,16 +274,20 @@ std::vector<WindowSnapshot> Runtime::Windows(const std::string& expectedEpoch) c
 }
 bool Runtime::Send(const WindowId& window, const Input& input, const std::string& expectedEpoch) {
     const auto finite = [](double value) { return std::isfinite(value); };
+    const auto position = [&](double x, double y) {
+        return finite(x) && finite(y) &&
+            (!input.normalizedPosition || (x >= 0 && x <= 1 && y >= 0 && y <= 1));
+    };
     switch (input.kind) {
         case Input::Kind::Key:
-            if (input.key.evdevCode < 0 || input.key.evdevCode > 0x2ff) return false;
+            if (input.normalizedPosition || input.key.evdevCode < 0 || input.key.evdevCode > 0x2ff) return false;
             break;
         case Input::Kind::Pointer:
             if (input.pointer.action < PointerAction::Press || input.pointer.action > PointerAction::Move ||
-                !finite(input.pointer.x) || !finite(input.pointer.y) || !finite(input.pointer.rawDeltaX) || !finite(input.pointer.rawDeltaY)) return false;
+                !position(input.pointer.x, input.pointer.y) || !finite(input.pointer.rawDeltaX) || !finite(input.pointer.rawDeltaY)) return false;
             break;
         case Input::Kind::Scroll:
-            if (input.scroll.axis < 0 || input.scroll.axis > 1 || !finite(input.scroll.value) || !finite(input.scroll.x) || !finite(input.scroll.y)) return false;
+            if (input.scroll.axis < 0 || input.scroll.axis > 1 || !finite(input.scroll.value) || !position(input.scroll.x, input.scroll.y)) return false;
             break;
         default: return false;
     }
@@ -278,6 +305,65 @@ bool Runtime::BindSurface(const WindowId& id, uint64_t surfaceId, bool attach, c
             return backend->BindSurface(*window, surfaceId, attach);
     }
     return false;
+}
+bool Runtime::CommitText(const WindowId& id, std::string text, const std::string& expectedEpoch) {
+    if (text.empty() || text.size() > 4096 || text.find('\0') != std::string::npos) return false;
+    auto& p = *impl_;
+    std::lock_guard<std::mutex> lock(p.mutex);
+    if (p.snapshot.state != State::Ready || expectedEpoch != std::to_string(p.snapshot.epoch)) return false;
+    const auto window = p.registry.Find(id);
+    if (!window || !window->textInputActive) return false;
+    for (auto* backend : p.active) {
+        if (backend->Id() == window->origin.backendId && backend->GetProtocol() == window->origin.protocol)
+            return backend->CommitText(*window, std::move(text));
+    }
+    return false;
+}
+bool Runtime::ControlWindow(const WindowId& id, const WindowControl& control, const std::string& expectedEpoch) {
+    using Kind = WindowControl::Kind;
+    switch (control.kind) {
+        case Kind::Resize:
+            if (control.width <= 0 || control.height <= 0 || control.width > 32767 || control.height > 32767)
+                return false;
+            break;
+        case Kind::Focus:
+        case Kind::Blur:
+        case Kind::Close:
+            break;
+        default: return false;
+    }
+    auto& p = *impl_;
+    std::lock_guard<std::mutex> lock(p.mutex);
+    if (p.snapshot.state != State::Ready || expectedEpoch != std::to_string(p.snapshot.epoch)) return false;
+    const auto window = p.registry.Find(id);
+    if (!window || (control.kind == Kind::Focus && !window->visible)) return false;
+    auto* backend = p.FindBackend(*window);
+    if (!backend) return false;
+    if (control.kind == Kind::Focus && !p.focused.empty() && p.focused != id) {
+        if (const auto previous = p.registry.Find(p.focused)) {
+            if (auto* previousBackend = p.FindBackend(*previous)) {
+                if (!previousBackend->ControlWindow(*previous, {Kind::Blur})) return false;
+            }
+            p.input.Forget(previous->id);
+        }
+        p.focused.clear();
+    }
+    if (control.kind == Kind::Blur && !p.focused.empty() && p.focused != id) return false;
+    if (!backend->ControlWindow(*window, control)) return false;
+    if (control.kind == Kind::Focus) p.focused = id;
+    else if (control.kind == Kind::Blur) {
+        p.input.Forget(id);
+        p.focused.clear();
+    }
+    return true;
+}
+bool Runtime::SetExternalFrameProvider(ExternalFrameProvider* provider) {
+    auto& p = *impl_;
+    std::lock_guard<std::mutex> operation(p.operations);
+    std::lock_guard<std::mutex> lock(p.mutex);
+    if (!p.active.empty() || (p.snapshot.state != State::Stopped && p.snapshot.state != State::Failed)) return false;
+    for (auto& backend : p.backends) backend->SetExternalFrameProvider(provider);
+    return true;
 }
 uint64_t Runtime::Subscribe(std::function<void(const Event&)> listener) { return impl_->events.Subscribe(std::move(listener)); }
 void Runtime::Unsubscribe(uint64_t token) { impl_->events.Unsubscribe(token); }

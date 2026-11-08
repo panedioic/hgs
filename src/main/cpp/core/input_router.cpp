@@ -16,6 +16,7 @@ bool InputRouter::Send(const WindowId& id, const Input& input) {
             target = button->second;
         } else if (!buttons_.empty()) target = buttons_.begin()->second;
     }
+    if (target != id && !registry_.Find(id)) return false;
     auto window = registry_.Find(target);
     const bool ok = window && dispatch_(*window, input);
     if (input.kind == Input::Kind::Key) {
@@ -26,6 +27,17 @@ bool InputRouter::Send(const WindowId& id, const Input& input) {
         else if (input.pointer.action == PointerAction::Press && ok) buttons_[input.pointer.button] = target;
     }
     return ok;
+}
+void InputRouter::Forget(const WindowId& window) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (auto it = keys_.begin(); it != keys_.end();) {
+        if (it->second == window) it = keys_.erase(it);
+        else ++it;
+    }
+    for (auto it = buttons_.begin(); it != buttons_.end();) {
+        if (it->second == window) it = buttons_.erase(it);
+        else ++it;
+    }
 }
 void InputRouter::Reset() {
     std::lock_guard<std::mutex> lock(mutex_); keys_.clear(); buttons_.clear();

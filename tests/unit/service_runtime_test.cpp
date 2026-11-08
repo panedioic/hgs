@@ -3,6 +3,7 @@
 #include "core/window_registry.h"
 #include "core/event_bus.h"
 #include "core/input_router.h"
+#include <algorithm>
 #include <cassert>
 #include <cstdio>
 using namespace hgs;
@@ -15,14 +16,17 @@ struct Fake final : Backend {
     Epoch epoch = 0;
     std::vector<WindowSnapshot> inputs;
     std::vector<std::tuple<WindowId, uint64_t, bool>> bindings;
+    std::vector<std::pair<WindowId, std::string>> commits;
+    std::vector<std::pair<WindowId, WindowControl::Kind>>* controls = nullptr;
     explicit Fake(Protocol p) : protocol(p) {}
     Protocol GetProtocol() const override { return protocol; }
     std::string Id() const override { return protocol == Protocol::Wayland ? "wl" : "x"; }
-    bool Start(const Config&, Epoch e, Sink s, Endpoint& ep, Error& error) override {
+    bool Start(const Config& config, Epoch e, Sink s, Endpoint& ep, Error& error) override {
         ++starts; epoch = e; sink = std::move(s);
         ep.protocol = protocol; ep.backendId = Id(); ep.runtimeDir = "/tmp/hgs";
         ep.address = protocol == Protocol::Wayland ? "wl-actual" : ":7";
         ep.logicalOutputReady = true;
+        if (SupportsXim()) ep.imeServerName = config.x11.imeServerName;
         if (fail) { error = {ErrorCode::BackendFailed, "fake", "injected failure"}; return false; }
         return true;
     }
@@ -31,6 +35,16 @@ struct Fake final : Backend {
     bool BindSurface(const WindowSnapshot& w, uint64_t id, bool attach) override {
         if (protocol != Protocol::X11) return false;
         bindings.emplace_back(w.id, id, attach);
+        return true;
+    }
+    bool SupportsXim() const override { return protocol == Protocol::X11; }
+    bool CommitText(const WindowSnapshot& w, std::string text) override {
+        commits.emplace_back(w.id, std::move(text));
+        return true;
+    }
+    bool ControlWindow(const WindowSnapshot& w, const WindowControl& control) override {
+        if (!controls) return false;
+        controls->emplace_back(w.id, control.kind);
         return true;
     }
     Event Create(uint64_t client, uint64_t native, uint64_t generation, std::string title) {
@@ -92,6 +106,22 @@ int main() {
     input.key.pressed = false;
     assert(runtime.Send(secondId, input)); assert(backend->inputs.back().id == firstId);
     assert(!runtime.Send("unknown", input));
+    input.key.pressed = true;
+    assert(runtime.Send(firstId, input));
+    event.kind = EventKind::Destroyed;
+    backend->sink(event);
+    assert(runtime.Send(secondId, input) && backend->inputs.back().id == secondId);
+    input.key.pressed = false;
+    assert(!runtime.Send(firstId, input));
+    assert(runtime.Send(secondId, input));
+    Input normalized;
+    normalized.normalizedPosition = true;
+    normalized.pointer.action = PointerAction::Move;
+    normalized.pointer.x = 0.5;
+    normalized.pointer.y = 1;
+    assert(runtime.Send(secondId, normalized));
+    normalized.pointer.x = 1.01;
+    assert(!runtime.Send(secondId, normalized));
     runtime.Stop(); assert(runtime.Inspect().state == State::Stopped && runtime.Inspect().endpoints.empty());
     assert(runtime.Windows().empty()); assert(!runtime.Send(firstId, input));
     auto count = received.size(); runtime.Stop(); assert(count == received.size());
@@ -111,10 +141,13 @@ int main() {
         std::vector<std::unique_ptr<Backend>> both; both.push_back(std::move(a)); both.push_back(std::move(b));
         Runtime atomic(std::move(both));
         config.protocols = Protocols::Both;
+        config.x11.imeServerName = "hgs-test";
         assert(!atomic.Start(config).ok);
         assert(ap->stops == 1 && bp->stops == 1 && atomic.Inspect().endpoints.empty());
         bp->fail = false; assert(atomic.Start(config).ok);
-        ap->Create(1, 8, 1, "wayland"); bp->Create(1, 8, 1, "x11");
+        assert(atomic.Inspect().capabilities.crossBackendFocus);
+        ap->Create(1, 8, 1, "wayland");
+        auto x11Event = bp->Create(1, 8, 1, "x11");
         assert(atomic.Windows().size() == 2);
         for (const auto& w : atomic.Windows()) {
             input.key.pressed = true; input.key.evdevCode = w.origin.protocol == Protocol::Wayland ? 30 : 31;
@@ -123,6 +156,33 @@ int main() {
         assert(ap->inputs.size() == 1 && bp->inputs.size() == 1);
         const auto activeEpoch = std::to_string(atomic.Inspect().epoch);
         const auto& x11 = bp->inputs.front().id;
+        const auto& wayland = ap->inputs.front().id;
+        using Control = WindowControl::Kind;
+        std::vector<std::pair<WindowId, Control>> controls;
+        ap->controls = bp->controls = &controls;
+        assert(!atomic.ControlWindow(x11, {Control::Focus}, "0"));
+        assert(atomic.ControlWindow(wayland, {Control::Focus}, activeEpoch));
+        assert(atomic.ControlWindow(x11, {Control::Focus}, activeEpoch));
+        assert(!atomic.ControlWindow(wayland, {Control::Blur}, activeEpoch));
+        assert(!atomic.ControlWindow(x11, {Control::Resize, 0, 200}, activeEpoch));
+        assert(atomic.ControlWindow(x11, {Control::Resize, 300, 200}, activeEpoch));
+        assert(atomic.ControlWindow(x11, {Control::Close}, activeEpoch));
+        assert(atomic.Windows().size() == 2);
+        assert((controls == std::vector<std::pair<WindowId, Control>>{
+            {wayland, Control::Focus}, {wayland, Control::Blur}, {x11, Control::Focus},
+            {x11, Control::Resize}, {x11, Control::Close}}));
+        Event popup;
+        popup.kind = EventKind::Created;
+        popup.window.origin = x11Event.window.origin;
+        ++popup.window.origin.nativeId;
+        popup.window.role = "popup";
+        popup.parentOrigin = x11Event.window.origin;
+        bp->sink(popup);
+        auto windows = atomic.Windows();
+        auto child = std::find_if(windows.begin(), windows.end(), [](const auto& window) { return window.role == "popup"; });
+        assert(child != windows.end() && child->parentId == x11);
+        popup.kind = EventKind::Destroyed;
+        bp->sink(popup);
         assert(!atomic.BindSurface(ap->inputs.front().id, 9, true, activeEpoch));
         assert(!atomic.BindSurface(x11, 0, true, activeEpoch));
         assert(!atomic.BindSurface(x11, 9, true, std::to_string(atomic.Inspect().epoch - 1)));
@@ -130,12 +190,25 @@ int main() {
         assert(atomic.BindSurface(x11, 9, false, activeEpoch));
         assert(bp->bindings.size() == 2 && bp->bindings.front() == std::make_tuple(x11, uint64_t{9}, true));
         assert(bp->bindings.back() == std::make_tuple(x11, uint64_t{9}, false));
+        assert(atomic.Inspect().capabilities.xim);
+        auto x11Env = atomic.Environment(Protocol::X11, error);
+        assert(error.code == ErrorCode::None && x11Env.set.back().name == "XMODIFIERS" &&
+               x11Env.set.back().value == "@im=hgs-test");
+        assert(!atomic.CommitText(x11, "before focus", activeEpoch));
+        x11Event.kind = EventKind::Changed;
+        x11Event.window.textInputActive = true;
+        bp->sink(x11Event);
+        assert(!atomic.CommitText(x11, std::string(4097, 'x'), activeEpoch));
+        assert(!atomic.CommitText(x11, "stale", "0"));
+        assert(atomic.CommitText(x11, "中文", activeEpoch));
+        assert(bp->commits.size() == 1 && bp->commits.front() == std::make_pair(x11, std::string("中文")));
 
         Event lost;
         lost.kind = EventKind::Destroyed;
         lost.window = bp->inputs.front();
         bp->sink(lost);
         assert(!atomic.BindSurface(x11, 9, true, activeEpoch));
+        assert(!atomic.CommitText(x11, "after destroy", activeEpoch));
         lost = {};
         lost.kind = EventKind::BackendDisconnected;
         lost.detail = "Xwayland process exited";

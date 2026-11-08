@@ -11,6 +11,7 @@ public:
     bool Start(const Config&, Epoch, Sink, Endpoint&, Error&) override;
     void Stop() override;
     bool Send(const WindowSnapshot&, const Input&) override;
+    bool ControlWindow(const WindowSnapshot&, const WindowControl&) override;
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;

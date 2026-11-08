@@ -1,4 +1,5 @@
 #include "legacy_wayland_backend.h"
+#include "input/input_manager.h"
 #include "api/hgs_instance.h"
 #include "api/hgs_endpoint.h"
 #include "compositor/wayland_server.h"
@@ -114,7 +115,7 @@ void LegacyWaylandBackend::Stop() {
     impl_->clients.clear(); impl_->windows.clear(); impl_->sink = {};
 }
 bool LegacyWaylandBackend::Send(const WindowSnapshot& w, const Input& input) {
-    if (w.origin.epoch != impl_->epoch || w.origin.backendId != Id()) return false;
+    if (w.origin.epoch != impl_->epoch || w.origin.backendId != Id() || input.normalizedPosition) return false;
     auto& legacy = HgsInstance::Instance();
     switch (input.kind) {
         case Input::Kind::Pointer: {
@@ -127,6 +128,11 @@ bool LegacyWaylandBackend::Send(const WindowSnapshot& w, const Input& input) {
             auto e = input.scroll; e.hintToplevel = w.legacyId; legacy.SendScrollEvent(e); break;
         }
     }
+    return true;
+}
+bool LegacyWaylandBackend::ControlWindow(const WindowSnapshot& w, const WindowControl& control) {
+    if (w.origin.epoch != impl_->epoch || w.origin.backendId != Id() || !w.legacyId) return false;
+    InputManager::GetInstance()->QueueWindowControl(w.legacyId, control);
     return true;
 }
 }

@@ -14,6 +14,10 @@ public:
     void Stop() override;
     bool Send(const WindowSnapshot& window, const Input& input) override;
     bool BindSurface(const WindowSnapshot& window, uint64_t surfaceId, bool attach) override;
+    bool SupportsXim() const override;
+    bool CommitText(const WindowSnapshot& window, std::string text) override;
+    bool ControlWindow(const WindowSnapshot& window, const WindowControl& control) override;
+    void SetExternalFrameProvider(ExternalFrameProvider* provider) override;
 
 private:
     struct Impl;

@@ -1,4 +1,5 @@
 #include "include/hgs/service.h"
+#include "include/hgs/external_frames.h"
 #include "backends/wayland/legacy_wayland_backend.h"
 #ifdef HGS_BUILD_X11
 #include "backends/xwayland/xwayland_backend.h"
@@ -21,4 +22,8 @@ Runtime& DefaultRuntime() {
     }());
     return runtime;
 }
+}
+
+extern "C" HGS_API bool Hgs_setExternalFrameProvider(hgs::service::ExternalFrameProvider* provider) {
+    return hgs::service::DefaultRuntime().SetExternalFrameProvider(provider);
 }

@@ -21,5 +21,6 @@ extern const char* kPresentFullscreenQuadVS;
 extern const char* kPresentFullscreenQuadFS;
 
 GLuint CompileShader(GLenum type, const char* src);
+void ComposeExternalTextureTransform(const float* nativeTransform, bool flipY, float* samplingTransform);
 
 } // namespace winehua

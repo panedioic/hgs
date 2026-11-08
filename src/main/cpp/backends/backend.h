@@ -2,6 +2,7 @@
 #include <functional>
 #include "include/hgs/service_types.h"
 namespace hgs::service {
+class ExternalFrameProvider;
 class Backend {
 public:
     using Sink = std::function<void(Event)>;
@@ -14,5 +15,9 @@ public:
     virtual void Stop() = 0;
     virtual bool Send(const WindowSnapshot& window, const Input& input) = 0;
     virtual bool BindSurface(const WindowSnapshot&, uint64_t, bool) { return false; }
+    virtual bool SupportsXim() const { return false; }
+    virtual bool CommitText(const WindowSnapshot&, std::string) { return false; }
+    virtual bool ControlWindow(const WindowSnapshot&, const WindowControl&) = 0;
+    virtual void SetExternalFrameProvider(ExternalFrameProvider*) {}
 };
 }

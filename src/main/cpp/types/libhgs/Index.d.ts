@@ -221,12 +221,13 @@ export const LOGE: (msg: string) => void;
 // ── 诊断 (Internal — 产品代码不要依赖) ───────────────────────────────────
 export const dumpWindowLayout: (displayId?: number) => void;
 
-// Protocol-neutral service API, API 1.1. X11/both report unsupported-protocol
-// until an Xwayland backend is built. All 64-bit identities are decimal strings.
+// Protocol-neutral service API. X11/both require the Xwayland backend.
+// All 64-bit identities are decimal strings.
 export interface HgsX11Options {
   xkbRoot: string;
   keymapPath: string;
   startupTimeoutMs?: number;
+  imeServerName?: string;
 }
 export interface HgsServiceOptions {
   protocols?: 'wayland' | 'x11' | 'both';
@@ -242,6 +243,7 @@ export interface HgsWaylandOptions { socketName?: string; }
 export interface HgsServiceError { code: string; stage: string; message: string; }
 export interface HgsCapabilities {
   wayland: boolean; x11: boolean; perWindow: boolean; desktopRoot: boolean;
+  xim: boolean;
   popupIdentity: boolean; crossBackendFocus: boolean;
 }
 export interface HgsEndpoint {
@@ -261,10 +263,12 @@ export interface HgsClientEnvironment {
 export interface HgsServiceWindow {
   id: string; epoch: string; protocol: string; backendId: string;
   clientId: string; nativeId: string; objectGeneration: string; surfaceGeneration: string;
+  framePresented: boolean;
   legacyId: number; clientPid: number; title: string; appId: string; role: string; parentId: string;
   x: number; y: number; width: number; height: number;
   minWidth: number; minHeight: number; maxWidth: number; maxHeight: number;
   visible: boolean; minimized: boolean; maximized: boolean; fullscreen: boolean; modal: boolean;
+  textInputActive: boolean;
 }
 export interface HgsServiceEvent {
   kind: string; epoch: string; serial: string; state: string; origin: string;
@@ -276,6 +280,12 @@ export interface HgsServiceInput {
   action?: number; x?: number; y?: number; button?: number;
   rawDeltaX?: number; rawDeltaY?: number; fromMouse?: boolean;
   axis?: number; value?: number; scrollStep?: number;
+  normalizedPosition?: boolean;
+}
+export interface HgsWindowControl {
+  kind: 'focus' | 'blur' | 'resize' | 'close';
+  width?: number;
+  height?: number;
 }
 export const serviceStart: (options: HgsServiceOptions) => HgsServiceStartResult;
 export const serviceStop: () => boolean;
@@ -286,4 +296,6 @@ export const serviceWindows: (epoch?: string) => HgsServiceWindow[];
 export const serviceClientEnvironment: (protocol: string, epoch: string) => HgsClientEnvironment;
 export const serviceSendInput: (windowId: string, input: HgsServiceInput, epoch?: string) => boolean;
 export const serviceBindSurface: (windowId: string, surfaceId: string, attach: boolean, epoch: string) => boolean;
+export const serviceCommitText: (windowId: string, text: string, epoch: string) => boolean;
+export const serviceControlWindow: (windowId: string, control: HgsWindowControl, epoch: string) => boolean;
 export const setServiceEventCallback: (listener: (event: HgsServiceEvent) => void) => boolean;

@@ -378,10 +378,10 @@ void WaylandServer::ResetSessionState() {
 // RemovePopupDataLocked / RemovePopupBySurfaceKeyLocked 已移至 PopupManager
 // (compositor/popup_manager.{h,cpp}, 重构第 5B2 步)
 
-void WaylandServer::SendToplevelClose(uint32_t toplevelId) {
+void WaylandServer::SendToplevelClose(uint32_t toplevelId, bool forgetResource) {
     wl_resource* tl = toplevelMgr_.FindToplevelResource(toplevelId);
     if (tl) {
-        toplevelMgr_.UnregisterToplevelResource(toplevelId);
+        if (forgetResource) toplevelMgr_.UnregisterToplevelResource(toplevelId);
         OH_LOG_INFO(LOG_APP, "[MW] SendToplevelClose id=%{public}u -> xdg_toplevel_send_close", toplevelId);
         xdg_toplevel_send_close(tl);
     } else {

@@ -3,6 +3,7 @@
 #include "pointer_extras.h"
 #include "compositor/wayland_server.h"  // 保留: FlushQueue 的 move grab 动作委托 + InputTarget 别名
 #include "hgs_instance.h"               // P1.1: 输入 NAPI 经门面结构体转发
+#include "include/hgs/service_types.h"
 #include "compositor/input/input_space_mapper.h"  // 坐标变换收口 (4C1): renderer 查找
                                             // fallback 已迁入, 本文件不再认识
                                             // PluginManager (include 已删)
@@ -783,6 +784,44 @@ void InputManager::SubmitEnterLeave(uint32_t tl, wl_resource* targetSurf,
 //  事件队列 flush (Wayland 线程 — pipe 回调 → poll 去重 → dispatch → flush)
 // ========================================================================
 
+void InputManager::QueueWindowControl(uint32_t tl, const hgs::service::WindowControl& control) {
+    uint32_t buttons = 0;
+    if (control.kind == hgs::service::WindowControl::Kind::Blur) {
+        if (tracker_.KeyboardFocusedToplevel() == tl) tracker_.ResetModifiers();
+        if (tracker_.PointerFocusedToplevel() == tl) {
+            buttons = tracker_.PressedButtons();
+            tracker_.ResetButtons();
+        }
+    }
+    queue_.Enqueue(InputQueue::Event::HOST_WINDOW_CONTROL, tl, nullptr,
+                   control.width, control.height, buttons, static_cast<uint32_t>(control.kind));
+}
+
+void InputManager::ApplyWindowControl(uint32_t tl, const hgs::service::WindowControl& control) {
+    using Kind = hgs::service::WindowControl::Kind;
+    switch (control.kind) {
+        case Kind::Focus:
+            if (tracker_.KeyboardFocusedToplevel() != tl) {
+                if (auto* surface = tmgr_->GetSurfaceForToplevel(tl)) {
+                    injector_.InjectKeyboardLeave();
+                    injector_.InjectKeyboardEnter(tl, surface);
+                }
+            }
+            break;
+        case Kind::Blur:
+            if (tracker_.KeyboardFocusedToplevel() == tl) injector_.InjectKeyboardLeave();
+            if (tracker_.PointerFocusedToplevel() == tl) injector_.InjectPointerLeave();
+            break;
+        case Kind::Resize:
+            WaylandServer::GetInstance()->NotifyToplevelResize(tl, control.width, control.height, true);
+            WaylandServer::GetInstance()->NotifyToplevelResize(tl, 0, 0, false);
+            break;
+        case Kind::Close:
+            WaylandServer::GetInstance()->SendToplevelClose(tl, false);
+            break;
+    }
+}
+
 void InputManager::FlushQueue() {
     // InputQueue::Poll = 锁内 swap 取批 + 去重 (原 FlushQueue 前半逐字,
     // dedup 日志在队列层 — 去重属队列批量语义, 与注入无关, 见 input_queue.h)
@@ -811,6 +850,16 @@ void InputManager::FlushQueue() {
             case InputQueue::Event::KBD_LEAVE:   injector_.InjectKeyboardLeave(); break;
             case InputQueue::Event::KBD_KEY:     injector_.InjectKeyboardKey(ev.btn_or_key, ev.state); break;
             case InputQueue::Event::KBD_MODIFIERS: injector_.InjectKeyboardModifiers(ev.mod_depressed, ev.mod_latched, ev.mod_locked, ev.mod_group); break;
+            case InputQueue::Event::HOST_WINDOW_CONTROL: {
+                if (ev.btn_or_key && tracker_.PointerFocusedToplevel() == ev.tl) {
+                    for (unsigned bit = 0; bit < 32; ++bit) {
+                        if (ev.btn_or_key & (uint32_t{1} << bit))
+                            injector_.InjectPointerButton(tracker_.BitToButton(bit), WL_POINTER_BUTTON_STATE_RELEASED);
+                    }
+                }
+                ApplyWindowControl(ev.tl, {static_cast<hgs::service::WindowControl::Kind>(ev.state), ev.x, ev.y});
+                break;
+            }
         }
     }
     // wl_display_flush_clients (display 在队列层初始化时注入)
