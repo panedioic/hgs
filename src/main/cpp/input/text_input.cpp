@@ -61,6 +61,7 @@ void TextInput::Unregister() {
     state_.cursorX = state_.cursorY = 0;
     state_.cursorW = state_.cursorH = 0;
     textInputs_.clear();
+    surfaceRects_.clear();
     display_ = nullptr;
     OH_LOG_INFO(LOG_APP, "[TextInput] unregistered OK");
 }
@@ -156,29 +157,41 @@ void TextInput::text_input_set_cursor_rectangle(wl_client*, wl_resource* res,
     self->state_.cursorY = y;
     self->state_.cursorW = w;
     self->state_.cursorH = h;
+    if (w > 0 && h > 0 && self->state_.surface)
+        self->surfaceRects_[self->state_.surface] = {x, y, w, h};
     OH_LOG_INFO(LOG_APP, "[TextInput] cursor_rect=%{public}d,%{public}d %{public}dx%{public}d",
                 x, y, w, h);
 }
 
 void TextInput::text_input_commit(wl_client*, wl_resource* res) {
     auto* self = static_cast<TextInput*>(wl_resource_get_user_data(res));
-    bool shouldActivate = false;
+    ActivateCb callback;
+    CursorRect rect;
     {
         std::lock_guard<std::mutex> lk(self->mutex_);
-        // 激活判定: enabled + 非零光标矩形 (enter 时 Wine 发 0,0,0,0;
-        // 文本框聚焦后应用调 SetIMECompositionRect → 非零矩形 → 真文本框)
-        if (self->state_.enabled && self->state_.cursorW > 0 && self->state_.cursorH > 0) {
-            if (!self->state_.activated) {
-                self->state_.activated = true;
-                shouldActivate = true;
-            }
+        if (!self->state_.enabled || self->state_.activated) return;
+        rect = {self->state_.cursorX, self->state_.cursorY,
+                self->state_.cursorW, self->state_.cursorH};
+        // Wine can send a zero rectangle after focus returns to a text field.
+        if (rect.w <= 0 || rect.h <= 0) {
+            auto saved = self->surfaceRects_.find(self->state_.surface);
+            if (saved == self->surfaceRects_.end()) return;
+            rect = saved->second;
         }
+        self->state_.activated = true;
+        callback = self->activateCb_;
     }
-    if (shouldActivate) {
-        OH_LOG_INFO(LOG_APP, "[TextInput] ACTIVATE rect=%{public}d,%{public}d %{public}dx%{public}d",
-                    self->state_.cursorX, self->state_.cursorY, self->state_.cursorW, self->state_.cursorH);
-        self->NotifyActivated(true);
-    }
+    if (callback) callback(true, rect.x, rect.y, rect.w, rect.h);
+}
+
+void TextInput::ForgetSurface(wl_resource* surface) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    surfaceRects_.erase(surface);
+}
+
+void TextInput::RearmActivation() {
+    std::lock_guard<std::mutex> lk(mutex_);
+    state_.activated = false;
 }
 
 // ========================================================================
@@ -370,6 +383,11 @@ napi_value SendImePreeditNAPI(napi_env env, napi_callback_info info) {
 
 // -- NAPI: imeBackspace -- (软键盘退格 → Wine KEY_BACKSPACE 按键注入;
 //    Wine 的 delete_surrounding_text 是空实现, 退格走现有 key 注入链路)
+napi_value ImeRearmNAPI(napi_env, napi_callback_info) {
+    TextInput::GetInstance()->RearmActivation();
+    return nullptr;
+}
+
 napi_value ImeBackspaceNAPI(napi_env env, napi_callback_info info) {
     (void)env;
     (void)info;

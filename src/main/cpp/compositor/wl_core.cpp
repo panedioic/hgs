@@ -129,6 +129,7 @@ void WaylandServer::compositor_create_surface(wl_client* client, wl_resource* co
         // 都可能是当前 pointer/keyboard 焦点 — 焦点悬垂后下一次 leave 会引用
         // 已复用的对象 id, client 报 "invalid object ... leave(uo)" 并断开。
         // 内部按指针比较, 非焦点 surface 是 no-op
+        TextInput::GetInstance()->ForgetSurface(r);
         InputManager::GetInstance()->OnSurfaceDestroyed(r);
         if (sd && sd->hasToplevel) {
             {

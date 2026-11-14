@@ -132,6 +132,7 @@ static napi_value Init(napi_env env, napi_value exports) {
         {"sendImeCommit",           nullptr, hgs::ti::SendImeCommitNAPI,            nullptr, nullptr, nullptr, napi_default, nullptr },
         {"sendImePreedit",          nullptr, hgs::ti::SendImePreeditNAPI,           nullptr, nullptr, nullptr, napi_default, nullptr },
         {"imeBackspace",            nullptr, hgs::ti::ImeBackspaceNAPI,             nullptr, nullptr, nullptr, napi_default, nullptr },
+        {"imeRearm",                nullptr, hgs::ti::ImeRearmNAPI,                nullptr, nullptr, nullptr, napi_default, nullptr },
         // TopLevel 相关
         {"setToplevelCallback",     nullptr, hgs::tl::SetToplevelCallbackNAPI,      nullptr, nullptr, nullptr, napi_default, nullptr },
         {"setToplevelEventCallback", nullptr, hgs::tl::SetToplevelEventCallbackNAPI, nullptr, nullptr, nullptr, napi_default, nullptr },
@@ -191,6 +192,8 @@ static napi_value Init(napi_env env, napi_value exports) {
         {"controllerSetEnabled",        nullptr, ControllerSetEnabled,              nullptr, nullptr, nullptr, napi_default, nullptr },
         {"controllerSetButton",         nullptr, ControllerSetButton,               nullptr, nullptr, nullptr, napi_default, nullptr },
         {"controllerSetAxis",           nullptr, ControllerSetAxis,                 nullptr, nullptr, nullptr, napi_default, nullptr },
+        {"controllerSetStick",          nullptr, ControllerSetStick,                nullptr, nullptr, nullptr, napi_default, nullptr },
+        {"controllerSetTrigger",        nullptr, ControllerSetTrigger,              nullptr, nullptr, nullptr, napi_default, nullptr },
         {"controllerSetHat",            nullptr, ControllerSetHat,                  nullptr, nullptr, nullptr, napi_default, nullptr },
         {"controllerResetSource",       nullptr, ControllerResetSource,             nullptr, nullptr, nullptr, napi_default, nullptr },
         {"controllerGetState",          nullptr, ControllerGetState,                nullptr, nullptr, nullptr, napi_default, nullptr },

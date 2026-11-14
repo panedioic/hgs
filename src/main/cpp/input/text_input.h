@@ -34,6 +34,8 @@ public:
     // InputManager keyboard enter/leave → 同步 text-input enter/leave
     void OnKeyboardEnter(wl_resource* surface);
     void OnKeyboardLeave(wl_resource* surface);
+    void ForgetSurface(wl_resource* surface);
+    void RearmActivation();
 
     // ArkTS 桥接: 输入法文本注入 → Wine (UTF-8)
     void SendCommitString(const char* utf8);
@@ -75,6 +77,11 @@ private:
     // OnKeyboardEnter 按 surface 所属 client 路由到对应对象。
     std::unordered_map<wl_client*, wl_resource*> textInputs_;
 
+    struct CursorRect {
+        int32_t x = 0, y = 0, w = 0, h = 0;
+    };
+    std::unordered_map<wl_resource*, CursorRect> surfaceRects_;
+
     wl_global* global_ = nullptr;
     wl_display* display_ = nullptr;
     State state_;
@@ -91,6 +98,7 @@ namespace ti {
 napi_value SetImeCallbackNAPI(napi_env env, napi_callback_info info);
 napi_value SendImeCommitNAPI(napi_env env, napi_callback_info info);
 napi_value SendImePreeditNAPI(napi_env env, napi_callback_info info);
+napi_value ImeRearmNAPI(napi_env env, napi_callback_info info);
 napi_value ImeBackspaceNAPI(napi_env env, napi_callback_info info);
 
 } // namespace ti

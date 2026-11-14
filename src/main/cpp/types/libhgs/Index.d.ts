@@ -188,6 +188,7 @@ export const registerHostWindow: (windowId: number) => void;
 export const setImeCallback: (cb: (active: number, x: number, y: number, w: number, h: number) => void) => void;
 export const sendImeCommit: (text: string) => void;
 export const sendImePreedit: (text: string, start: number, end: number) => void;
+export const imeRearm: () => void;
 export const imeBackspace: () => void;
 
 // ── Gamepad/Controller (@experimental, 手柄扩展; 签名来自 C++ 实现) ──────
@@ -201,7 +202,12 @@ export const setGamepadDeviceCallback: (cb: (connected: boolean) => void) => voi
 export const setGamepadRumbleCallback: (cb: (low: number, high: number, durationMs: number) => void) => void;
 export const controllerSetEnabled: (enabled: boolean) => void;
 export const controllerSetButton: (source: number, slot: number, button: number, pressed: boolean) => void;
+/** Legacy single-axis input. Prefer controllerSetStick for canonical vectors. */
 export const controllerSetAxis: (source: number, slot: number, axis: number, value: number) => void;
+/** stick: 0=left, 1=right. Positive x is right; positive y is up. */
+export const controllerSetStick: (source: number, slot: number, stick: number, x: number, y: number) => void;
+/** trigger: 0=left, 1=right. Value ranges from 0 to 1. */
+export const controllerSetTrigger: (source: number, slot: number, trigger: number, value: number) => void;
 export const controllerSetHat: (source: number, slot: number, x: number, y: number) => void;
 export const controllerResetSource: (source: number) => void;
 export const controllerGetState: (slot: number) => object;      // 按键/轴状态对象 (调试用)
