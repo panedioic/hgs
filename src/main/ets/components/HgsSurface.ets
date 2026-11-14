@@ -30,7 +30,7 @@ export struct HgsSurface {
   resolveId?: () => number;
   // 内建 controller: 生命周期事件转交三个回调 (id 经 resolveId/toplevelId 解析)
   private controller: HgsSurfaceController = new HgsSurfaceController(
-    () => this.resolveId ? this.resolveId() : this.toplevelId,
+    () => this.surfaceTarget(),
     (id, sid) => {
       this.onSurfaceCreatedCallback(sid, id);
       // 原生通道也挂 controller 的理由: 同进程第二个窗口起, 原生
@@ -137,6 +137,17 @@ export struct HgsSurface {
   private tpTwoFingerLastMidY: number = 0;
   private tpScrollAccumX: number = 0;
   private tpScrollAccumY: number = 0;
+
+  private surfaceTarget(): number {
+    return this.resolveId ? this.resolveId() : this.toplevelId;
+  }
+
+  private pointerTarget(px: number, py: number): number {
+    if (this.mouseMode === 'desktop') {
+      return hgs.findToplevelAt(px, py);
+    }
+    return this.surfaceTarget();
+  }
 
   // ────── 触摸板模式 ────────────────────────────────────────────────────────────
   private handleTouchpad(ev: TouchEvent): void {
@@ -326,7 +337,7 @@ export struct HgsSurface {
         midY = Math.round(midY / ev.touches.length);
         if (!this.twoFingerActive) {
           this.twoFingerActive = true;
-          this.twoFingerTl = this.toplevelId;
+          this.twoFingerTl = this.pointerTarget(midX, midY);
           hgs.LOGI(`[CLICK-PIPE] [ArkTS] ${this.tag} SCROLL-START id=${this.twoFingerTl} fingers=${ev.touches.length}`);
           this.twoFingerLastMidX = midX;
           this.twoFingerLastMidY = midY;
@@ -368,7 +379,7 @@ export struct HgsSurface {
       const py = Math.round(vp2px(t.y));
 
       if (ev.type === TouchType.Down) {
-        const tl = this.toplevelId;
+        const tl = this.pointerTarget(px, py);
         if (tl <= 0) {
           hgs.LOGI(`[CLICK-PIPE] [ArkTS] ${this.tag} TOUCH skipped (no target at ${px},${py})`);
           return;
@@ -466,7 +477,7 @@ export struct HgsSurface {
   // 单窗口直通型 (WineWindow/WinePopup): 真实时序直通 + 手势守卫
   private onMouseWindow(ev: MouseEvent): void {
     const tag = this.tag;
-    const id = this.toplevelId;
+    const id = this.surfaceTarget();
     if (id <= 0) return;
     // Wine 发起 xdg_toplevel.move → 下一个 MOVE 时 OHOS startMoving 接管
     // (必须优先于手势守卫: move 请求的 Move 被吞则 moveGrabPending 悬挂)
@@ -521,7 +532,7 @@ export struct HgsSurface {
         const py = Math.round(vp2px(ev.y));
         let tl = this.leftBtnTl || this.rightBtnTl || this.midBtnTl;
         if (tl <= 0) {
-          tl = this.toplevelId;
+          tl = this.pointerTarget(px, py);
           if (tl <= 0) return;
         }
         if (++this.hoverLogCounter % 120 === 0) {
@@ -549,7 +560,7 @@ export struct HgsSurface {
           this.mouseLeftActive = true;
           this.touchPending = false;
           this.isDragging = false;
-              const tl = this.toplevelId;
+          const tl = this.pointerTarget(px, py);
           if (tl <= 0) {
             this.leftBtnTl = 0;
             return;
@@ -572,7 +583,7 @@ export struct HgsSurface {
       const isRight = ev.button === MouseButton.Right;
       const btnCode = mapMouseButton(isRight ? 2 : 4);
       if (ev.action === MouseAction.Press) {
-        const tl = this.toplevelId;
+        const tl = this.pointerTarget(px, py);
         if (tl <= 0) {
           if (isRight) this.rightBtnTl = 0; else this.midBtnTl = 0;
           return;
@@ -595,9 +606,9 @@ export struct HgsSurface {
   onWineAxisEvent(event?: AxisEvent): void {
     if (this.floating) return;  // 悬浮窗态: 输入旁路
     if (!event) return;
-    const px = vp2px(event.x);
-    const py = vp2px(event.y);
-    const id = this.toplevelId;
+    const px = Math.round(vp2px(event.x));
+    const py = Math.round(vp2px(event.y));
+    const id = this.pointerTarget(px, py);
     if (id <= 0) return;
     const vert = event.getVerticalAxisValue();
     const horiz = event.getHorizontalAxisValue();
@@ -613,7 +624,8 @@ export struct HgsSurface {
   // ── 键盘 ──────────────────────────────────────────────────────────────────
   onWineKeyEvent(ev: KeyEvent): void {
     if (this.floating) return;  // 悬浮窗态: 输入旁路
-    const id = this.keyboardTarget;
+    // 桌面键盘事件交给 Wayland seat 当前的焦点，使用 rootId 作会话入口。
+    const id = this.mouseMode === 'desktop' ? this.surfaceTarget() : this.keyboardTarget;
     if (id <= 0) return;
     ev.stopPropagation();
     const evdevCode = OH2EVDEV[ev.keyCode] ?? 0;
@@ -754,7 +766,7 @@ export struct HgsSurface {
           .onLoad((_event?: object) => {
             // W2b: bindXComponent 收 toplevelId (onLoad 事件对象 unwrap 不可靠,
             // 见 graphics/egl_surface.cpp 注释); id 由 native 回调认领 surface
-            const id = this.resolveId ? this.resolveId() : this.toplevelId;
+            const id = this.surfaceTarget();
             hgs.LOGI(`[${this.tag}] onLoad bindXComponent id=${id}`);
             // 先重试 OH_NativeXComponent 回调注册: napi register 函数在 import
             // 时就跑完了, 那时 XComponent 还没创建 (unwrap 失败), ArkUI 创建
@@ -783,6 +795,7 @@ export struct HgsSurface {
         .height('100%')
         .backgroundColor('#00000000')
         .focusable(true)
+        .focusOnTouch(this.mouseMode === 'desktop' || this.keyboardTarget > 0)
         .defaultFocus(true)
         .onTouch((event: TouchEvent) => this.onWineTouch(event))
         .onMouse((event: MouseEvent) => this.onWineMouse(event))
