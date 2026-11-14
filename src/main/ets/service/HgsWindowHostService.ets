@@ -123,6 +123,7 @@ interface WindowRecord {
   preMaxY: number;
   hasPreMax: boolean;
   hasStateBeenMax: boolean;  // 系统模式下是否进过最大化 (Normal→restore 的依据)
+  scale: number;
 }
 
 export class HgsWindowHostService {
@@ -162,6 +163,13 @@ export class HgsWindowHostService {
     host.serviceHost = null;
     host.serviceSession = null;
     host.serviceStage = null;
+  }
+
+  /** Set the scale used for subsequent Wayland windows. */
+  static setWaylandWindowScale(scale: number): void {
+    if (Number.isFinite(scale) && scale > 0) {
+      HgsWindowHostService.getInstance().options.windowScale = scale;
+    }
   }
 
   static shutdown(): void {
@@ -258,7 +266,11 @@ export class HgsWindowHostService {
   }
 
   /** 逻辑尺寸 → OHOS 窗口尺寸缩放 (HgsAppWindowAbility 显示前 resize 用) */
-  windowScale(): number {
+  windowScale(toplevelId?: number): number {
+    if (toplevelId !== undefined) {
+      const record = this.windows.get(toplevelId);
+      if (record) return record.scale;
+    }
     const s = this.options.windowScale ?? 1;
     return s > 0 ? s : 1;
   }
@@ -359,6 +371,7 @@ export class HgsWindowHostService {
         win: null, ctx: null, spec: null, lastW: 0, lastH: 0,
         state: ST_NORMAL, normalW: 0, normalH: 0,
         preMaxX: 0, preMaxY: 0, hasPreMax: false, hasStateBeenMax: false,
+        scale: this.windowScale(),
       };
       this.windows.set(id, rec);
     }
@@ -505,8 +518,8 @@ export class HgsWindowHostService {
 
   private applyGeometry(rec: WindowRecord, width: number, height: number): void {
     if (!rec.win || width <= 0 || height <= 0) return;
-    const w = Math.max(1, Math.round(width * this.scale()));
-    const h = Math.max(1, Math.round(height * this.scale()));
+    const w = Math.max(1, Math.round(width * rec.scale));
+    const h = Math.max(1, Math.round(height * rec.scale));
     if (w === rec.lastW && h === rec.lastH) return;  // 去重, 防反馈环
     rec.win.resize(w, h).then((): void => {
       // 成功才记录 — 失败 (如窗口迁移期 1300002) 留待重试再发

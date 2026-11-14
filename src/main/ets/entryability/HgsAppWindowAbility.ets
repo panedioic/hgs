@@ -64,7 +64,7 @@ export default class HgsAppWindowAbility extends UIAbility {
     } else {
       hgs.LOGI(`[${TAG}] floatingOnly=false — 系统默认窗口模式`);
     }
-    const scale = HgsWindowHostService.getInstance().windowScale();
+    const scale = host.windowScale(this.toplevelId);
     if (this.contentW > 0 && this.contentH > 0) {
       try {
         await mainWin.resize(Math.round(this.contentW * scale),

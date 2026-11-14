@@ -46,6 +46,8 @@ struct X11WindowPage {
 
 旧的 `HgsWindowHostService.start(...)` 仍提供 Wayland 兼容入口。自管窗口或无窗口宿主可直接使用 `HgsService.start(...)`。
 
+`HgsWindowHostService.setWaylandWindowScale(scale)` 更新之后创建的 Wayland 窗口的逻辑像素到 OHOS 窗口像素的比例。每个窗口在创建时记录自己的比例，后续调整几何时沿用该值。
+
 `composition: 'preserve'` 或缺省值保留宿主预设；`per-window`、`desktop-root` 分别显式设置独立窗口和桌面画布。output 的 width/height 缺省为 0，不覆盖宿主已经计算的尺寸；显式尺寸需同时大于 0。inputBackend 支持 auto/arkts/native。
 
 ## 生命周期与错误
