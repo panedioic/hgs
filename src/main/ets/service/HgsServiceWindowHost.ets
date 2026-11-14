@@ -30,12 +30,21 @@ export class HgsServiceWindowHost {
   private stage: window.WindowStage;
   private pageUrl: string;
   private windowScale: number;
+  private windowShownListener: ((window: HgsServiceWindow) => void) | null = null;
 
   constructor(session: HgsSession, stage: window.WindowStage, pageUrl: string, windowScale: number) {
     this.session = session;
     this.stage = stage;
     this.pageUrl = pageUrl;
     this.windowScale = windowScale;
+  }
+
+  setWindowShownListener(listener: ((window: HgsServiceWindow) => void) | null): void {
+    this.windowShownListener = listener;
+  }
+
+  isWindowShown(id: string): boolean {
+    return this.entries.get(id)?.shown ?? false;
   }
 
   start(): void {
@@ -126,17 +135,15 @@ export class HgsServiceWindowHost {
     const height = Math.max(1, Math.round(snapshot.height * entry.scale));
     const rect = host.getWindowProperties().windowRect;
     if (rect.width !== width || rect.height !== height) await host.resize(width, height);
-    if (parent?.host || snapshot.role === 'popup') {
-      let x = Math.round(snapshot.x * entry.scale);
-      let y = Math.round(snapshot.y * entry.scale);
-      if (parent?.host) {
-        const anchor = parent.host.getWindowProperties().windowRect;
-        x = anchor.left + Math.round((snapshot.x - parent.snapshot.x) * parent.scale);
-        y = anchor.top + Math.round((snapshot.y - parent.snapshot.y) * parent.scale);
-      }
-      await host.moveWindowToGlobal(Math.max(0, Math.min(x, screen.width - width)),
-        Math.max(0, Math.min(y, screen.height - height)));
+    let x = Math.round(snapshot.x * entry.scale);
+    let y = Math.round(snapshot.y * entry.scale);
+    if (parent?.host) {
+      const anchor = parent.host.getWindowProperties().windowRect;
+      x = anchor.left + Math.round((snapshot.x - parent.snapshot.x) * parent.scale);
+      y = anchor.top + Math.round((snapshot.y - parent.snapshot.y) * parent.scale);
     }
+    await host.moveWindowToGlobal(Math.max(0, Math.min(x, screen.width - width)),
+      Math.max(0, Math.min(y, screen.height - height)));
     if (entry.shown && snapshot.role !== 'popup') await host.setWindowTitle(snapshot.title);
   }
 
@@ -165,6 +172,7 @@ export class HgsServiceWindowHost {
       await host.showWindow();
       if (this.entries.get(id) !== entry) return;
       entry.shown = true;
+      this.windowShownListener?.(entry.snapshot);
       entry.enqueueLayout(async (): Promise<void> => this.layout(entry));
       this.entries.forEach((child: Entry): void => {
         if (child.snapshot.parentId === id) this.openIfReady(child);

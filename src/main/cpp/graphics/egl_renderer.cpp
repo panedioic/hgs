@@ -217,7 +217,8 @@ bool EglRenderer::TryAttachZeroCopySurface(uint32_t rendererToplevelId)
         if (!zeroCopyProducerWindow_ ||
             !broker.AttachZeroCopyTarget(
                 surface.surfaceKey, zeroCopyProducerWindow_,
-                static_cast<uint64_t>(vsyncPeriodNs_.load(std::memory_order_relaxed))))
+                static_cast<uint64_t>(vsyncPeriodNs_.load(std::memory_order_relaxed)),
+                surface.vulkan))
         {
             ReleaseZeroCopyBinding();
             continue;
@@ -1060,6 +1061,7 @@ void EglRenderer::RenderLoop() {
                             frameEndedUs - swapStartedUs);
             }
             skipFrames_ = 0;
+            perf.surfaceKey = zeroCopySurfaceKey_;
             perf.Add(useToplevel, takeUs, uploadUs, frameEndedUs - swapStartedUs,
                      frameEndedUs - frameStartedUs, cpuFrame ? px.size() : 0, swapOk);
         }

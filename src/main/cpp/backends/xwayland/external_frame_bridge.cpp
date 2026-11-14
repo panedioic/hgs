@@ -1,4 +1,6 @@
 #include "external_frame_bridge.h"
+#include "common/display_fps.h"
+#include <atomic>
 #include <algorithm>
 #include <hilog/log.h>
 
@@ -10,6 +12,16 @@ X11ExternalFrameBridge::X11ExternalFrameBridge(ExternalFrameProvider& provider, 
 
 X11ExternalFrameBridge::~X11ExternalFrameBridge() {
     for (auto& [generation, binding] : bindings_) Release(binding);
+}
+
+void X11ExternalFrameBridge::PublishFrame(uint64_t token, Clock::time_point now) {
+    if (frames_++ == 0) frameWindowStart_ = now;
+    const auto elapsed = now - frameWindowStart_;
+    if (elapsed < 1s) return;
+    static std::atomic<uint64_t> sequence{0};
+    const double seconds = std::chrono::duration<double>(elapsed).count();
+    winehua_display_fps_publish(0, ++sequence, static_cast<double>(frames_ - 1) / seconds, "x11", token);
+    frames_ = 0;
 }
 
 void X11ExternalFrameBridge::Refresh(Clock::time_point now) {
@@ -70,6 +82,7 @@ hgs_x11_external_result X11ExternalFrameBridge::Present(
             // from the EGL window viewport.
             const auto result = binding.surface->Draw(true);
             if (result == Result::Presented) {
+                PublishFrame(binding.target.token, now);
                 binding.errors = 0;
                 if (!binding.presented) {
                     OH_LOG_Print(LOG_APP, LOG_WARN, 0, "HGS_X11_GPU",

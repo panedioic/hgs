@@ -8,3 +8,4 @@ export { HgsService, HgsSession, HgsStartError } from './src/main/ets/api/HgsSer
 export { HgsServiceOptions, HgsX11Options, HgsServiceSnapshot, HgsClientEnvironment,
   HgsServiceWindow, HgsServiceEvent, HgsServiceInput, HgsWindowControl, HgsEndpoint, HgsCapabilities,
   HgsServiceError, HgsServiceStartResult, HgsWaylandOptions, HgsInheritedFd } from 'libhgs.so';
+export { HgsServiceWindowHost } from './src/main/ets/service/HgsServiceWindowHost';

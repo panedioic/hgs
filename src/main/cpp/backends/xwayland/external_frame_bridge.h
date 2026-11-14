@@ -26,12 +26,14 @@ private:
         unsigned errors = 0;
         bool presented = false;
     };
+    void PublishFrame(uint64_t token, Clock::time_point now);
     void Refresh(Clock::time_point now);
     void Release(Binding& binding);
 
     ExternalFrameProvider& provider_;
     uint64_t periodNs_;
-    Clock::time_point nextQuery_{}, lastQuery_{};
+    Clock::time_point nextQuery_{}, lastQuery_{}, frameWindowStart_{};
+    uint64_t frames_ = 0;
     std::vector<ExternalFrameTarget> targets_;
     std::unordered_map<uint64_t, Binding> bindings_;
     std::unordered_set<uint64_t> retired_;

@@ -26,7 +26,11 @@ endif()
 
 # 预编译 wayland-server
 option(HGS_BUILD_X11 "Build the optional OHOS Xwayland backend" OFF)
-set(HGS_X11_DEPS_ROOT "" CACHE PATH "ARM64 OHOS wlroots and Xwayland SDK prefix")
+set(HGS_X11_DEPS_ROOT "" CACHE PATH "OHOS wlroots and Xwayland SDK prefix")
+set(HGS_X11_DEPS_BY_ABI "" CACHE PATH "Build root with <OHOS_ARCH>/usr Xwayland SDKs")
+if(HGS_X11_DEPS_BY_ABI)
+    set(HGS_X11_DEPS_ROOT "${HGS_X11_DEPS_BY_ABI}/${OHOS_ARCH}/usr")
+endif()
 option(HGS_BUILD_XIM "Build the optional X11 input method server" OFF)
 set(HGS_XIM_DEPS_ROOT "" CACHE PATH "ARM64 OHOS xcb-imdkit SDK prefix")
 if(HGS_BUILD_XIM AND NOT HGS_BUILD_X11)

@@ -48,7 +48,7 @@ public:
     // 把 OH_NativeImage 消费者的 producer 窗口挂给 GPU 后端 (宿主经
     // surfaceId 还原窗口后转交 virgl/venus presenter)
     virtual bool AttachZeroCopyTarget(uint64_t surfaceKey, OHNativeWindow *producerWindow,
-                                      uint64_t framePeriodNs) = 0;
+                                      uint64_t framePeriodNs, bool vulkan) = 0;
     virtual void DetachZeroCopyTarget(uint64_t surfaceKey) = 0;
     virtual void SetZeroCopyFramePeriod(uint64_t surfaceKey, uint64_t framePeriodNs) = 0;
     // .ready marker 落盘 (zc_bridge 的发布/回退协议, contract C4)。
@@ -63,7 +63,7 @@ public:
     bool IsZeroCopyActive() const override { return false; }
     bool IsVulkanPresentMode() const override { return false; }
     bool QueryZeroCopySurfaces(std::vector<ZeroCopySurfaceInfo> &) const override { return false; }
-    bool AttachZeroCopyTarget(uint64_t, OHNativeWindow *, uint64_t) override { return false; }
+    bool AttachZeroCopyTarget(uint64_t, OHNativeWindow *, uint64_t, bool) override { return false; }
     void DetachZeroCopyTarget(uint64_t) override {}
     void SetZeroCopyFramePeriod(uint64_t, uint64_t) override {}
     void SetZeroCopySurfaceReady(uint64_t, bool) override {}
