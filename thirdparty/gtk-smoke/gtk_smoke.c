@@ -208,8 +208,8 @@ static void setup_runtime_env(void)
 
     if (g_getenv("XKB_CONFIG_ROOT") == NULL) {
         char* cands[2];
-        cands[0] = g_build_filename(sysroot, "usr/share/x11/xkb", NULL);
-        cands[1] = g_build_filename(g_get_home_dir(), "usr/share/x11/xkb", NULL);
+        cands[0] = g_build_filename(sysroot, "usr/share/X11/xkb", NULL);
+        cands[1] = g_build_filename(g_get_home_dir(), "usr/share/X11/xkb", NULL);
         for (int i = 0; i < 2; i++) {
             if (g_file_test(cands[i], G_FILE_TEST_IS_DIR)) {
                 g_setenv("XKB_CONFIG_ROOT", cands[i], TRUE);
